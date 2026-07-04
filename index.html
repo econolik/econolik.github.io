@@ -2,17 +2,17 @@
 <html lang="ru">
 <head>
 <!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-6Z6T2H7Q2T"></script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-6TLE6DQT9F"></script>
 <script>
   window.dataLayer = window.dataLayer || [];
   function gtag(){dataLayer.push(arguments);}
   gtag('js', new Date());
-  gtag('config', 'G-6Z6T2H7Q2T');
+  gtag('config', 'G-6TLE6DQT9F');
 </script>
 
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Экономика · курс для 10–11 классов (по Мэнкью)</title>
+<title>Econolik · Economics Course</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -412,17 +412,17 @@ footer .reset:hover{color:#fff;border-color:var(--gold)}
     </nav>
     <div class="top-spacer"></div>
     <button id="lang-btn" onclick="switchLang()" style="font-family:var(--mono);font-size:.8rem;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:none;cursor:pointer;color:var(--ink-soft)">EN</button>
-    <div class="user-chip" id="userChip" onclick="CURRENT?toggleUserMenu(event):showGate()" title="Войти или меню ученика">
-      <span class="av" id="userAv">?</span><span class="uname-txt" id="userNameTxt">Войти</span>
+    <div class="user-chip" id="userChip" onclick="CURRENT?toggleUserMenu(event):showGate()" title="Log in">
+      <span class="av" id="userAv">?</span><span class="uname-txt" id="userNameTxt">Log in</span>
       <div class="user-menu" id="userMenu">
         <div class="um-sep"></div>
-        <button class="umitem" onclick="switchUser();closeUserMenu()">👤 Сменить ученика</button>
-        <button class="umitem um-danger" onclick="resetProgress();closeUserMenu()">🗑 Сбросить прогресс</button>
+        <button class="umitem" id="umSwitchUser" onclick="switchUser();closeUserMenu()">👤 Switch Student</button>
+        <button class="umitem um-danger" id="umResetProg" onclick="resetProgress();closeUserMenu()">🗑 Reset Progress</button>
         <div class="um-sep"></div>
-        <button class="umitem um-danger" onclick="event.stopPropagation();logout();closeUserMenu()">🚪 Выйти из профиля</button>
+        <button class="umitem um-danger" id="umLogout" onclick="event.stopPropagation();logout();closeUserMenu()">🚪 Log Out</button>
       </div>
     </div>
-    <div class="xp-chip" id="xpChip" style="display:none" onclick="showPracticeSum()" title="Мои результаты" style="cursor:pointer">
+    <div class="xp-chip" id="xpChip" style="display:none" onclick="showPracticeSum()" title="My Results" style="cursor:pointer">
       <div class="xp-seg"><span class="xp-seg-lbl" id="chip-theory">Теория</span><div class="xp-seg-bar"><i id="seg-theory"></i></div><span class="xp-seg-tip" id="tip-theory"></span></div>
       <div class="xp-seg"><span class="xp-seg-lbl" id="chip-quiz">Тесты</span><div class="xp-seg-bar"><i id="seg-quiz"></i></div><span class="xp-seg-tip" id="tip-quiz"></span></div>
       <div class="xp-seg"><span class="xp-seg-lbl" id="chip-terms">Термины</span><div class="xp-seg-bar"><i id="seg-terms"></i></div><span class="xp-seg-tip" id="tip-terms"></span></div>
@@ -673,6 +673,15 @@ function applyLang(){
   // footer
   _set('footer-desc', t.footerDesc);
   _set('footer-reset', t.footerReset);
+  // xp chips
+  _set('chip-theory', t.chipTheory);
+  _set('chip-quiz', t.chipQuiz);
+  _set('chip-terms', t.chipTerms);
+  _set('chip-games', t.chipGames);
+  // user menu
+  _set('umSwitchUser', t.switchUser);
+  _set('umResetProg', t.resetProg);
+  _set('umLogout', t.logout);
   // update user chip login text if not logged in
   const nm=document.getElementById('userNameTxt');
   if(nm && nm.textContent===TR['ru'].login||nm&&nm.textContent===TR['en'].login||nm&&nm.textContent===TR['kz'].login){
@@ -2166,14 +2175,15 @@ function promptSave(){
   _promptShown=true;
   closeGate();
   const ov=document.createElement('div'); ov.id='userGate';
+  const tg=TR[LANG];
   ov.innerHTML=`<div class="gate-card">
-    <h3>Сохранить результат? 💾</h3>
-    <p class="gp">Введи имя — и мы запомним твой прогресс, очки и значки.</p>
+    <h3>${LANG==='en'?'Save progress? 💾':LANG==='kz'?'Прогресті сақтау? 💾':'Сохранить результат? 💾'}</h3>
+    <p class="gp">${LANG==='en'?"Enter your name — we'll save your progress, points and badges.":LANG==='kz'?'Атыңды жаз — прогресіңді, ұпайларды және жетістіктерді сақтаймыз.':'Введи имя — и мы запомним твой прогресс, очки и значки.'}</p>
     <div class="uinput">
-      <input id="gateName" placeholder="Например, Аня Петрова" maxlength="40" autocomplete="off">
-      <button class="btn btn-gold" onclick="submitSave()">Сохранить</button>
+      <input id="gateName" placeholder="${LANG==='en'?'E.g. Alex Smith':LANG==='kz'?'Мысалы, Айгерім':'Например, Аня Петрова'}" maxlength="40" autocomplete="off">
+      <button class="btn btn-gold" onclick="submitSave()">${LANG==='en'?'Save':LANG==='kz'?'Сақтау':'Сохранить'}</button>
     </div>
-    <div class="gate-cancel"><button onclick="closeGate()">Пропустить</button></div>
+    <div class="gate-cancel"><button onclick="closeGate()">${LANG==='en'?'Skip':LANG==='kz'?'Өткізу':'Пропустить'}</button></div>
   </div>`;
   document.body.appendChild(ov);
   const inp=document.getElementById('gateName');
@@ -2217,7 +2227,7 @@ function refreshUI(){
     if(nm) nm.textContent=CURRENT;
   } else {
     if(av) av.textContent='👤';
-    if(nm) nm.textContent='Войти';
+    if(nm) nm.textContent=TR[LANG].login;
   }
 }
 
