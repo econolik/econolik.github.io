@@ -2110,7 +2110,8 @@ function logout(){
 }
 async function resetProgress(){
   if(!CURRENT){ showGate(); return; }
-  if(!confirm('Сбросить прогресс ученика «'+CURRENT+'»? Очки и значки этого ученика будут удалены.')) return;
+  const _cm=LANG==='en'?`Reset progress for "${CURRENT}"? Points and badges will be deleted.`:LANG==='kz'?`«${CURRENT}» оқушысының прогресін тазалау? Ұпайлар мен жетістіктер жойылады.`:`Сбросить прогресс ученика «${CURRENT}»? Очки и значки этого ученика будут удалены.`;
+  if(!confirm(_cm)) return;
   P=blankP();
   try{ await STORE.del(progKey(CURRENT)); }catch(e){}
   refreshUI(); renderTopics(); renderBadges(); go('home');
@@ -2123,12 +2124,13 @@ function showGate(){
   const existing = USERS.length ? `<p class="pick">Или продолжи, если уже занимался:</p>
     <div class="names">${USERS.map(n=>{const e=encodeURIComponent(n);return `<span class="uname" onclick="chooseUser(decodeURIComponent('${e}'))">${escapeHtml(n)} <span class="del" title="Удалить ученика" onclick="event.stopPropagation();deleteUser(decodeURIComponent('${e}'))">✕</span></span>`;}).join('')}</div>` : '';
   const cancel = CURRENT ? `<div class="gate-cancel"><button onclick="closeGate()">Отмена</button></div>` : '';
+  const _lg=TR[LANG];
   ov.innerHTML=`<div class="gate-card">
-      <h3>Кто учится? 👋</h3>
-      <p class="gp">Введи имя — курс будет сохранять твой прогресс, очки и значки отдельно от других.</p>
+      <h3>${LANG==='en'?'Who is studying? 👋':LANG==='kz'?'Кім оқиды? 👋':'Кто учится? 👋'}</h3>
+      <p class="gp">${LANG==='en'?"Enter your name — the course will save your progress, points and badges separately.":LANG==='kz'?'Атыңды жаз — курс прогресіңді, ұпайларды және жетістіктерді бөлек сақтайды.':'Введи имя — курс будет сохранять твой прогресс, очки и значки отдельно от других.'}</p>
       <div class="uinput">
-        <input id="gateName" placeholder="Например, Аня Петрова" maxlength="40" autocomplete="off">
-        <button class="btn btn-gold" onclick="submitGate()">Начать</button>
+        <input id="gateName" placeholder="${LANG==='en'?'E.g. Alex Smith':LANG==='kz'?'Мысалы, Айгерім':'Например, Аня Петрова'}" maxlength="40" autocomplete="off">
+        <button class="btn btn-gold" onclick="submitGate()">${LANG==='en'?'Start':LANG==='kz'?'Бастау':'Начать'}</button>
       </div>
       ${existing}
       ${cancel}
