@@ -2566,12 +2566,14 @@ function nextQ(){
 }
 function finishQuiz(){
   const t=tl()[RQ.i], n=t.quiz.length, c=RQ.correct;
-  const pass=c>=Math.ceil(n*0.6);
+  const pass=c>=Math.ceil(n*0.8);
   // запись результата
   if(P.scores[RQ.i]==null||c>P.scores[RQ.i]) P.scores[RQ.i]=c;
   addXP(RQ.gainedXP);
   if(pass && !P.done.includes(RQ.i)){ P.done.push(RQ.i); addXP(25); }
   saveProgress();
+
+  if(pass) trackEvent('QUIZ_PASSED','quiz_passed',{topic:RQ.i+1});
 
   const medal = c===n?"🏆": pass?"🎉":"💪";
   const tr4=TR[LANG];
@@ -2816,6 +2818,14 @@ function initCompound(){
 /* ============================================================
    ВСТРОЕННЫЕ ИГРЫ (оверлей)
    ============================================================ */
+/* --- Аналитика: одно событие → одновременно в Яндекс.Метрику и Google Analytics.
+   Безопасно: проверяем наличие ym/gtag и оборачиваем в try/catch, чтобы сайт не падал,
+   если счётчик не загрузился (актуально для GA, который в ряде регионов режется). --- */
+function trackEvent(ymGoal, gaEvent, gaParams){
+  try{ if(typeof ym==='function') ym(110515732,'reachGoal',ymGoal); }catch(e){}
+  try{ if(typeof gtag==='function') gtag('event',gaEvent,gaParams||{}); }catch(e){}
+}
+
 let _gameURL=null;
 function openGame(key){
   const map={ koktel: window.GAME_KOKTEL_B64 };
@@ -2830,6 +2840,8 @@ function openGame(key){
   if(_gameURL){ try{URL.revokeObjectURL(_gameURL);}catch(e){} }
   _gameURL=URL.createObjectURL(new Blob([bytes],{type:'text/html'}));
   window.open(_gameURL,'_blank');
+
+  trackEvent('OPEN_GAME','open_game',{game_name:key});
 
   P.gamesPlayed=(P.gamesPlayed||0)+1; saveProgress();
 }
