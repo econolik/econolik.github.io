@@ -13,15 +13,6 @@
 </script>
 <noscript><div><img src="https://mc.yandex.ru/watch/110515732" style="position:absolute;left:-9999px;" alt="" /></div></noscript>
 <!-- /Yandex.Metrika counter -->
-<!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-6TLE6DQT9F"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-  gtag('config', 'G-6TLE6DQT9F');
-</script>
-
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Econolik — Интерактивный курс экономики для школьников</title>
@@ -2573,7 +2564,7 @@ function finishQuiz(){
   if(pass && !P.done.includes(RQ.i)){ P.done.push(RQ.i); addXP(25); }
   saveProgress();
 
-  if(pass) trackEvent('QUIZ_PASSED','quiz_passed',{topic:RQ.i+1});
+  if(pass) trackEvent('QUIZ_PASSED');
 
   const medal = c===n?"🏆": pass?"🎉":"💪";
   const tr4=TR[LANG];
@@ -2818,12 +2809,11 @@ function initCompound(){
 /* ============================================================
    ВСТРОЕННЫЕ ИГРЫ (оверлей)
    ============================================================ */
-/* --- Аналитика: одно событие → одновременно в Яндекс.Метрику и Google Analytics.
-   Безопасно: проверяем наличие ym/gtag и оборачиваем в try/catch, чтобы сайт не падал,
-   если счётчик не загрузился (актуально для GA, который в ряде регионов режется). --- */
-function trackEvent(ymGoal, gaEvent, gaParams){
+/* --- Аналитика: отправляем событие в Яндекс.Метрику (reachGoal).
+   Безопасно: проверяем наличие ym и оборачиваем в try/catch, чтобы сайт
+   не падал, если счётчик не загрузился. --- */
+function trackEvent(ymGoal){
   try{ if(typeof ym==='function') ym(110515732,'reachGoal',ymGoal); }catch(e){}
-  try{ if(typeof gtag==='function') gtag('event',gaEvent,gaParams||{}); }catch(e){}
 }
 
 let _gameURL=null;
@@ -2841,7 +2831,7 @@ function openGame(key){
   _gameURL=URL.createObjectURL(new Blob([bytes],{type:'text/html'}));
   window.open(_gameURL,'_blank');
 
-  trackEvent('OPEN_GAME','open_game',{game_name:key});
+  trackEvent('OPEN_GAME');
 
   P.gamesPlayed=(P.gamesPlayed||0)+1; saveProgress();
 }
