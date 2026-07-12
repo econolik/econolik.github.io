@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://econolik.github.io/sitemap.xml
+Sitemap: https://econolik.com/sitemap.xml
