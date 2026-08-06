@@ -1,0 +1,1647 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Коктель — прототип</title>
+<!-- Yandex.Metrika counter -->
+<script>
+  (function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
+  m[i].l=1*new Date();for(var j=0;j<document.scripts.length;j++){if(document.scripts[j].src===r){return;}}
+  k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})
+  (window,document,"script","https://mc.yandex.ru/metrika/tag.js","ym");
+  ym(110515732, "init", {clickmap:true, trackLinks:true, accurateTrackBounce:true});
+  try{ ym(110515732,'reachGoal','OPEN_GAME'); }catch(e){}
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/110515732" style="position:absolute;left:-9999px;" alt="" /></div></noscript>
+<!-- /Yandex.Metrika counter -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;}
+
+  html,body{
+    margin:0;padding:0;
+    width:100dvw;height:100dvh;
+    background:#1c1722;overflow:hidden;
+    font-family:'Fredoka','Trebuchet MS',sans-serif;
+    -webkit-tap-highlight-color:transparent;
+    display:flex;align-items:center;justify-content:center;
+  }
+
+  /* Фоновый паттерн для десктопа */
+  body::before{
+    content:'';position:fixed;inset:0;
+    background:
+      radial-gradient(circle at 20% 50%, #2d1f3d 0%, transparent 50%),
+      radial-gradient(circle at 80% 20%, #1a3a2a 0%, transparent 50%),
+      radial-gradient(circle at 60% 80%, #3a1f1a 0%, transparent 50%);
+    z-index:0;
+  }
+
+  /* Контейнер игры */
+  #game{
+    position:relative;z-index:1;
+    width:100dvw;height:100dvh;
+  }
+
+  /* На планшете и десктопе — карточка с тенью */
+  @media (min-width: 601px){
+    #game{
+      width:calc(100dvh * 480 / 854);
+      max-width:96dvw;
+    }
+    #game canvas{
+      border-radius:24px;
+      box-shadow:0 8px 48px rgba(0,0,0,0.7), 0 2px 8px rgba(0,0,0,0.4);
+    }
+  }
+
+  canvas{touch-action:none;display:block;}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+"use strict";
+
+const W = 480, H = 854;
+// Два шрифта: Fredoka для заголовков/кнопок, Nunito для текста
+const FONT      = '"Fredoka","Trebuchet MS",sans-serif'; // заголовки, кнопки
+const FONT_TEXT = '"Nunito","Trebuchet MS",sans-serif';  // весь остальной текст
+// Три размера
+const SZ_H  = '26px'; // крупные заголовки и кнопки
+const SZ_S  = '20px'; // подзаголовки, лейблы, значения
+const SZ_B  = '16px'; // основной текст, подсказки, итоги
+
+// ---- Экономика (баланс v2, по таблице koktel_balans_v2) ----
+const START_MONEY = 500;
+const COST_CUP = 12;      // себестоимость стакана (кофе+молоко+сахар+стакан)
+const COST_ICE = 2;       // стоимость 1 льда (тает за ночь)
+const COST_PER_CUP = COST_CUP; // для маржи; лёд — отдельная закупка
+const BASE_PRICE = 50;
+const BASE_FOOT = 30;     // базовый поток посетителей
+const PRICE_MIN = 10, PRICE_MAX = 100, PRICE_STEP = 5;
+const BUY_STEP = 5;
+
+// ---- Коэффициенты модели (из таблицы) ----
+const WCOEF_ANCHOR = 0.8;   // якорь коэф. погоды
+const WCOEF_PER_DEG = 0.01; // прирост коэф. погоды на 1°C
+const PRICE_SLOPE = 1.0;    // влияние цены на спрос
+const MIN_CONV = 0;          // нет минимума — при высокой цене спрос может быть 0
+const ICE_BONUS = 0.3;      // макс. бонус спроса от льда в жару
+const HEAT_TEMP = 35;       // температура «полной жары», °C
+
+// ---- Игровые данные (по балансу из таблицы) ----
+// wcoef = WCOEF_ANCHOR + WCOEF_PER_DEG * t
+const DAYS = [
+  { name:'Мороз',    temp:'-10°', t:-10, icon:'❄️', sky:0x8fbfe0 },
+  { name:'Дождь',    temp:'0°',   t:0,   icon:'🌧️', sky:0x7f93a6 },
+  { name:'Облачно',  temp:'+15°', t:15,  icon:'⛅',  sky:0xc6d2da },
+  { name:'Солнечно', temp:'+25°', t:25,  icon:'🌤️', sky:0xffdf7e },
+  { name:'Жарко',    temp:'+35°', t:35,  icon:'🔥', sky:0xffb15c },
+];
+// Считаем wcoef по формуле таблицы: якорь(0.8) + прирост(0.01) × t
+DAYS.forEach(d => { d.wcoef = Math.round((WCOEF_ANCHOR + WCOEF_PER_DEG * d.t) * 100) / 100; });
+
+// цвета тел человечков (для разнообразия)
+const BODY_COLORS = [0x5a9bd4, 0x7d6fc9, 0x5fa544, 0xe8915a, 0xe05a8a, 0x4bc0c0];
+
+const EVENTS = [
+  { label:'Обычный день',          coef:1.00, w:5 },
+  { label:'Фестиваль рядом 🎉',    coef:1.35, w:1 },
+  { label:'Блогер снял сторис 📱', coef:1.25, w:1 },
+  { label:'Дорожные работы 🚧',    coef:0.75, w:1 },
+];
+
+// ---- Тайминг ----
+const DAY_MS = 30000;
+const SERVE_MS = 480;
+const MAX_QUEUE = 6;
+
+// ---- Раскладка ----
+const LANE_Y = 600, FRONT_X = 248, SLOT_GAP_X = 52, SPAWN_X = -44;
+
+// Фразы покупателей при отказе
+const PHRASES_NO = ['дорого!','в другой раз...','нет сдачи 😅','не сезон','подумаю ещё','ой, дорого','лучше воды'];
+// Фразы покупателей при покупке
+const PHRASES_YES = ['вкусно!','ммм 😋','спасибо!','беру два!','отлично!','как раз то!','🔥 огонь!'];
+// Фразы продавца (случайно появляются)
+const PHRASES_SELLER = [
+  'налетай! 🎉','свежий коктейль! 🥤','скидки нет 😄',
+  'только у нас!','лучший в городе!','попробуй! 😋',
+  'очередь не задерживаем! 😤','берём? или смотрим? 👀',
+  'сегодня особенно вкусно 🤌','ещё тёплый! ☀️',
+  'последний стакан! 😱','акция: 1 стакан = 1 стакан 🤣',
+];
+const COL = { ink:'#2b2330', cream:'#fff4e0', coral:'#ff6b5e', mint:'#2ec4b6', sun:'#ffd23f', sub:'#7a6f80' };
+
+function pickWeighted(arr){
+  const total = arr.reduce((s,a)=>s+(a.w||a.weight||1),0);
+  let r = Math.random()*total;
+  for(const a of arr){ r -= (a.w||a.weight||1); if(r<=0) return a; }
+  return arr[arr.length-1];
+}
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+function corr(xs, ys){
+  const n=xs.length; if(n<2) return 0;
+  const mx=xs.reduce((a,b)=>a+b,0)/n, my=ys.reduce((a,b)=>a+b,0)/n;
+  let sxy=0,sxx=0,syy=0;
+  for(let i=0;i<n;i++){ const dx=xs[i]-mx, dy=ys[i]-my; sxy+=dx*dy; sxx+=dx*dx; syy+=dy*dy; }
+  if(sxx===0||syy===0) return 0;
+  return sxy/Math.sqrt(sxx*syy);
+}
+
+// ---- Звук: синтез через Web Audio (без файлов) ----
+let _actx = null;
+function audio(){
+  try{ if(!_actx) _actx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ return null; }
+  if(_actx.state==='suspended') _actx.resume();
+  return _actx;
+}
+function playBell(){
+  const a=audio(); if(!a) return; const t=a.currentTime;
+  [988, 1319].forEach((f,i)=>{
+    const o=a.createOscillator(), g=a.createGain();
+    o.type='sine'; o.frequency.value=f;
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(0.09/(i+1), t+0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t+0.45);
+    o.connect(g); g.connect(a.destination); o.start(t); o.stop(t+0.5);
+  });
+}
+function playClink(){
+  const a=audio(); if(!a) return; const t=a.currentTime;
+  [1568, 2349, 3136].forEach((f,i)=>{
+    const o=a.createOscillator(), g=a.createGain();
+    o.type='sine'; o.frequency.value=f;
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(0.07/(i+1), t+0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t+0.32);
+    o.connect(g); g.connect(a.destination); o.start(t); o.stop(t+0.34);
+  });
+}
+function playNope(){
+  const a=audio(); if(!a) return; const t=a.currentTime;
+  const o=a.createOscillator(), g=a.createGain();
+  o.type='triangle';
+  o.frequency.setValueAtTime(300,t);
+  o.frequency.exponentialRampToValueAtTime(150,t+0.18);
+  o.frequency.exponentialRampToValueAtTime(110,t+0.4);
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(0.14,t+0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+0.45);
+  o.connect(g); g.connect(a.destination); o.start(t); o.stop(t+0.48);
+}
+function playPour(){
+  const a=audio(); if(!a) return; const t=a.currentTime;
+  for(let i=0;i<7;i++){
+    const o=a.createOscillator(), g=a.createGain(), tt=t+i*0.055;
+    o.type='sine';
+    o.frequency.setValueAtTime(170+Math.random()*130, tt);
+    o.frequency.exponentialRampToValueAtTime(110+Math.random()*70, tt+0.05);
+    g.gain.setValueAtTime(0.0001,tt);
+    g.gain.exponentialRampToValueAtTime(0.07, tt+0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, tt+0.07);
+    o.connect(g); g.connect(a.destination); o.start(tt); o.stop(tt+0.09);
+  }
+}
+
+function roundRect(scene, x, y, w, h, r, color, alpha){
+  const g = scene.add.graphics();
+  g.fillStyle(color, alpha==null?1:alpha);
+  g.fillRoundedRect(x, y, w, h, r);
+  return g;
+}
+
+// Кнопка — отдельный объект на верхнем уровне сцены (надёжно ловит тапы)
+function makeButton(scene, x, y, w, h, label, color, textColor, depth, onClick){
+  const c = scene.add.container(x,y).setDepth(depth);
+  const g = scene.add.graphics();
+  const draw=(col)=>{ g.clear(); g.fillStyle(col,1); g.fillRoundedRect(-w/2,-h/2,w,h,16);
+    g.lineStyle(3,0x000000,0.12); g.strokeRoundedRect(-w/2,-h/2,w,h,16); };
+  draw(color);
+  const t = scene.add.text(0,0,label,{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:textColor||'#ffffff'}).setOrigin(0.5);
+  c.add([g,t]); c.setSize(w,h);
+  c._fn = onClick;
+  c.setLabel=(s)=>t.setText(s);
+  return c;
+}
+
+function makeSymButton(scene, x, y, label, color, depth, onClick){
+  const c = scene.add.container(x,y).setDepth(depth);
+  const t = scene.add.text(0,0,label,{fontFamily:FONT_TEXT,fontSize:SZ_H,fontStyle:'700',color}).setOrigin(0.5);
+  c.add(t); c.setSize(44,44);
+  c._fn = onClick;
+  return c;
+}
+
+
+// Создаёт кнопку напрямую внутри контейнера layer (тап-зона совпадает с визуалом)
+function mkInto(scene, layer, x, y, w, h, label, color, textColor, onClick){
+  const g=scene.add.graphics(); g.fillStyle(color,1); g.fillRoundedRect(-w/2,-h/2,w,h,16);
+  g.lineStyle(3,0x000000,0.12); g.strokeRoundedRect(-w/2,-h/2,w,h,16);
+  const t=scene.add.text(0,0,label,{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:textColor||'#fff'}).setOrigin(0.5);
+  const c=scene.add.container(x,y,[g,t]).setDepth(layer.depth+1); c.setSize(w,h);
+  c._fn = onClick;
+  c.setLabel=(s)=>t.setText(s);
+  return c;
+}
+
+class MainScene extends Phaser.Scene {
+  constructor(){ super('main'); }
+
+  create(){
+    this.input.addPointer(2);
+    this.input.on('pointerdown', audio);
+    this.money = START_MONEY;
+    this.dayIndex = 0;
+    this.paused = false;
+    this.gameSpeed = 1;
+    // Перемешиваем порядок погод случайно (алгоритм Фишера-Йетса)
+    this.dayOrder = DAYS.map((_,i)=>i);
+    for(let i=this.dayOrder.length-1;i>0;i--){
+      const j=Math.floor(Math.random()*(i+1));
+      [this.dayOrder[i],this.dayOrder[j]]=[this.dayOrder[j],this.dayOrder[i]];
+    }
+    this.price = 50;
+    this.inv = { cups:0, ice:0 };
+    this.spentToday = 0;
+    this.history = [];
+    this.shopButtons = [];
+    this.summaryButtons = [];
+    this.queue = [];
+
+    this.sky = this.add.rectangle(W/2, H/2, W, H, DAYS[0].sky);
+
+    // Единый ручной обработчик кликов — обходит баг Phaser с hit-test в контейнерах
+    this.input.on('pointerdown', (p) => {
+      const hit = (list, tweenScale=0.94) => {
+        for(const b of list){
+          if(!b||!b.active||!b.visible) continue;
+          if(Math.abs(p.x-b.x)<b.width/2 && Math.abs(p.y-b.y)<b.height/2){
+            this.tweens.add({targets:b,scale:tweenScale,duration:70,yoyo:true});
+            if(b._fn) b._fn();
+            else if(b._fn) b._fn();
+            return true;
+          }
+        } return false;
+      };
+      switch(this.state){
+        case 'shop':    hit(this.shopButtons); break;
+        case 'summary': hit(this.summaryButtons); break;
+        case 'theory':  hit(this.theoryButtons); break;
+        case 'sandbox': hit(this.sandboxButtons, 0.78); break;
+        case 'report':  hit(this.reportButtons); break;
+        case 'price':   hit(this.priceButtons); break;
+        case 'day': {
+          const b = this.pauseBtn;
+          if(b?.active&&b?.visible&&Math.abs(p.x-b.x)<b.width/2&&Math.abs(p.y-b.y)<b.height/2){
+            this.tweens.add({targets:b,scale:0.94,duration:70,yoyo:true});
+            this.cyclePlayState();
+          }
+          break;
+        }
+      }
+    });
+    this.drawWorld();
+
+    roundRect(this, 8, 8, W-16, 64, 16, 0x2b2330, 0.92);
+    // День — 2 строки
+    this.dayLabelText = this.add.text(22, 14, 'День', {fontFamily:FONT_TEXT,fontSize:SZ_B,color:'#bdb2c4'});
+    this.dayText = this.add.text(22, 32, '', {fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:'#fff4e0'});
+    // Погода
+    this.weatherLabel = this.add.text(W/2, 14, '', {fontFamily:FONT_TEXT,fontSize:SZ_B,color:'#bdb2c4'}).setOrigin(0.5,0);
+    this.weatherText = this.add.text(W/2, 33, '', {fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:'#ffd23f'}).setOrigin(0.5,0);
+    // Деньги
+    this.add.text(W-22, 14, 'Деньги', {fontFamily:FONT_TEXT,fontSize:SZ_B,color:'#bdb2c4'}).setOrigin(1,0);
+    this.moneyText = this.add.text(W-22, 32, '', {fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:'#2ec4b6'}).setOrigin(1,0);
+
+    this.shopPanel = this.add.container(0,0);
+    this.dayPanel  = this.add.container(0,0);
+    this.summary   = this.add.container(0,0).setDepth(50);
+    this.reportLayer = this.add.container(0,0).setDepth(60).setVisible(false);
+    this.reportButtons = [];
+    this.priceLayer = this.add.container(0,0).setDepth(65).setVisible(false);
+    this.priceButtons = [];
+    this.theoryLayer = this.add.container(0,0).setDepth(70).setVisible(false);
+    this.theoryButtons = [];
+    this.sandboxLayer = this.add.container(0,0).setDepth(70).setVisible(false);
+    this.sandboxButtons = [];
+    this.sb = { cost: COST_CUP, foot: BASE_FOOT, price: BASE_PRICE };
+
+    this.buildShopPanel();
+    this.buildDayPanel();
+
+    this.state = 'shop';
+    this.enterShop();
+  }
+
+  drawWorld(){
+    const horizon=560;
+    const ground=this.add.graphics();
+    ground.fillStyle(0xe7cf9f,1); ground.fillRect(0,horizon,W,H-horizon);
+    ground.fillStyle(0x000000,0.05);
+    [[120,648],[300,706],[210,766],[384,664],[70,726],[420,744]].forEach(p=>ground.fillEllipse(p[0],p[1],11,4));
+
+    // солнце
+    const sun=this.add.graphics(); this.sun=sun;
+    sun.lineStyle(5,0xf6b21d,1);
+    for(let i=0;i<12;i++){ const a=i/12*Math.PI*2;
+      sun.lineBetween(86+Math.cos(a)*36,138+Math.sin(a)*36,86+Math.cos(a)*48,138+Math.sin(a)*48); }
+    sun.fillStyle(0xfac22b,1); sun.fillCircle(86,138,28);
+
+    // облака
+    const cloud=(x,y,s)=>{ const g=this.add.graphics(); g.fillStyle(0xfbf7ee,1);
+      g.fillRoundedRect(x-6*s,y+2*s,56*s,16*s,8*s);
+      g.fillCircle(x,y,18*s); g.fillCircle(x+24*s,y-4*s,22*s); g.fillCircle(x+48*s,y,15*s); };
+    cloud(320,206,1.0); cloud(64,330,0.75); cloud(392,372,0.6);
+
+    // деревья и кусты
+    this.drawTree(46,568,1.0); this.drawTree(436,566,0.95);
+    this.drawBush(18,568,1.2); this.drawBush(116,572,0.85); this.drawBush(366,572,1.0); this.drawBush(456,568,1.1);
+
+    this.drawKiosk();
+  }
+
+  drawTree(x,baseY,s){
+    const g=this.add.graphics();
+    g.fillStyle(0x9a6b3f,1); g.fillRoundedRect(x-7*s,baseY-50*s,14*s,54*s,4);
+    g.lineStyle(3,0x4e8a2e,1);
+    g.fillStyle(0x6cae3e,1); g.fillCircle(x,baseY-74*s,40*s); g.strokeCircle(x,baseY-74*s,40*s);
+  }
+
+  drawBush(x,baseY,s){
+    const g=this.add.graphics(); g.fillStyle(0x6cae3e,1);
+    g.fillCircle(x,baseY,22*s); g.fillCircle(x+26*s,baseY+4*s,17*s); g.fillCircle(x-22*s,baseY+4*s,15*s);
+  }
+
+  drawKiosk(){
+    const KX=138, KW=207, KY=8;
+    const ink=0x4b3f3a, red=0xe5483d, redD=0xc63a30, white=0xf4efe6, cream=0xfdf6e3;
+    const g=this.add.graphics();
+
+    // Продавец ЗА стойкой
+    const selX=KX+KW/2, selY=544+KY;
+    const sv=this.add.graphics();
+    sv.fillStyle(0xff8c2b,1); sv.fillRoundedRect(selX-16,selY-52,32,30,6);
+    sv.lineStyle(2.5,ink,1); sv.strokeRoundedRect(selX-16,selY-52,32,30,6);
+    sv.fillStyle(0xff8c2b,1);
+    sv.fillRoundedRect(selX-28,selY-34,12,10,4);
+    sv.fillRoundedRect(selX+16,selY-34,12,10,4);
+    sv.lineStyle(2,ink,1);
+    sv.strokeRoundedRect(selX-28,selY-34,12,10,4);
+    sv.strokeRoundedRect(selX+16,selY-34,12,10,4);
+    sv.fillStyle(0xf5c542,1); sv.fillCircle(selX,selY-64,15);
+    sv.lineStyle(2.5,ink,1); sv.strokeCircle(selX,selY-64,15);
+    sv.fillStyle(0xffffff,1); sv.fillRoundedRect(selX-10,selY-82,20,12,3);
+    sv.fillRoundedRect(selX-7,selY-91,14,12,5);
+    sv.lineStyle(1.5,ink,1); sv.strokeRoundedRect(selX-10,selY-82,20,12,3);
+
+    // КИОСК — все y сдвинуты на KY
+    g.fillStyle(0xb7bcbf,1); g.fillRoundedRect(KX,552+KY,KW,14,4);
+    g.lineStyle(2.5,ink,1); g.strokeRoundedRect(KX,552+KY,KW,14,4);
+    g.fillStyle(red,1); g.fillRoundedRect(KX+10,438+KY,KW-20,116,5);
+    g.lineStyle(2.5,ink,1); g.strokeRoundedRect(KX+10,438+KY,KW-20,116,5);
+    g.fillStyle(white,1); g.fillRoundedRect(KX+18,446+KY,KW-36,74,4);
+    g.lineStyle(2,ink,1); g.strokeRoundedRect(KX+18,446+KY,KW-36,74,4);
+    g.fillStyle(redD,1); g.fillRect(KX+10,520+KY,KW-20,4);
+    g.fillStyle(red,1); g.fillRoundedRect(KX,414+KY,KW,28,6);
+    g.lineStyle(2.5,ink,1); g.strokeRoundedRect(KX,414+KY,KW,28,6);
+    g.fillStyle(redD,1); g.fillRect(KX+4,438+KY,KW-8,4);
+
+    this.add.text(KX+KW/2,427+KY,'🥤 Cocktail',{fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'700',color:'#ffffff'}).setOrigin(0.5);
+
+    g.fillStyle(cream,1); g.fillRoundedRect(KX+24,453+KY,52,60,4);
+    g.lineStyle(1.5,ink,0.3); g.strokeRoundedRect(KX+24,453+KY,52,60,4);
+    g.fillStyle(red,1); g.fillRoundedRect(KX+24,453+KY,52,14,3);
+    this.add.text(KX+50,460+KY,'Меню',{fontFamily:FONT_TEXT,fontSize:'11px',fontStyle:'700',color:'#fff'}).setOrigin(0.5);
+    this.drawMiniCup(KX+50,487+KY,0.85);
+
+    const mx=KX+KW-70, my=450+KY, mw=44, mh=60;
+    g.fillStyle(white,1); g.fillRoundedRect(mx,my,mw,mh,4);
+    g.lineStyle(2,ink,1); g.strokeRoundedRect(mx,my,mw,mh,4);
+    g.fillStyle(red,1); g.fillRoundedRect(mx+6,my+4,mw-12,22,4);
+    g.lineStyle(1.5,ink,0.6); g.strokeRoundedRect(mx+6,my+4,mw-12,22,4);
+    g.fillStyle(redD,1); g.fillRoundedRect(mx+9,my+14,mw-18,8,2);
+    g.fillStyle(0xe8dcc8,1); g.fillRoundedRect(mx+4,my+28,mw-8,26,3);
+    g.lineStyle(1.5,ink,0.2); g.strokeRoundedRect(mx+4,my+28,mw-8,26,3);
+    g.fillStyle(ink,1); g.fillRoundedRect(mx+mw/2-3,my+48,6,8,2);
+    g.fillStyle(0x6b5c4a,1); g.fillRoundedRect(mx+mw/2-6,my+52,12,4,2);
+
+    this.sellerX=selX; this.sellerY=selY-90;
+    this.time.addEvent({delay:Phaser.Math.Between(4000,8000),loop:false,callback:()=>this.sellerTalk()});
+  }
+
+  sellerSay(phrase, duration=1800){
+    const t = this.add.text(this.sellerX, this.sellerY - 30, phrase,
+      {fontFamily:FONT_TEXT, fontSize:SZ_B, fontStyle:'700', color:'#2b2330',
+       backgroundColor:'#fff4e0', padding:{x:9,y:6}, wordWrap:{width:200}})
+      .setOrigin(0.5,1).setDepth(12).setAlpha(0);
+    this.tweens.add({targets:t, alpha:1, y:t.y-10, duration:300, ease:'Back.out',
+      onComplete:()=>{ this.time.delayedCall(duration, ()=>{
+        this.tweens.add({targets:t, alpha:0, duration:300, onComplete:()=>t.destroy()});
+      }); }});
+  }
+
+  sellerTalk(){
+    if(this.state !== 'day') return;
+    const phrase = PHRASES_SELLER[Phaser.Math.Between(0, PHRASES_SELLER.length-1)];
+    this.sellerSay(phrase, 2000);
+    this.time.addEvent({delay:Phaser.Math.Between(5000,10000), loop:false, callback:()=>this.sellerTalk()});
+  }
+
+  drawMiniCup(x,y,s){
+    const g=this.add.graphics();
+    g.fillStyle(0xe5483d,1);
+    g.beginPath(); g.moveTo(x-7*s,y-6*s); g.lineTo(x+7*s,y-6*s); g.lineTo(x+5*s,y+10*s); g.lineTo(x-5*s,y+10*s); g.closePath(); g.fillPath();
+    g.lineStyle(2*s,0x4b3f3a,1); g.strokePath();
+    g.fillStyle(0x5fa544,1); g.fillRoundedRect(x-8*s,y-10*s,16*s,5*s,2); g.lineStyle(2*s,0x4b3f3a,1); g.strokeRoundedRect(x-8*s,y-10*s,16*s,5*s,2);
+    g.lineStyle(2*s,0x5fa544,1); g.lineBetween(x+2*s,y-10*s,x+5*s,y-18*s);
+  }
+
+  buildShopPanel(){
+    const p = this.shopPanel;
+    const INK='#2b2330', SUB='#888877', GREEN=0x5fa544;
+    p.add(roundRect(this, 16, 78, W-32, 598, 22, 0xfff4e0, 0.98));
+
+    p.add(this.add.text(W/2, 106, 'Подготовка к смене', {fontFamily:FONT,fontSize:SZ_H,fontStyle:'700',color:'#e5483d'}).setOrigin(0.5));
+    this.eventText = this.add.text(W/2, 136, '', {fontFamily:FONT_TEXT,fontSize:SZ_B,color:INK,align:'center',wordWrap:{width:W-60}}).setOrigin(0.5);
+    p.add(this.eventText);
+
+    const sep=(y)=>{ const g=this.add.graphics(); g.lineStyle(1,0x2b2330,0.1); g.lineBetween(32,y,W-32,y); p.add(g); };
+
+    // Посетители — чёрный шрифт
+    p.add(this.add.text(36, 172, 'Ожидается посетителей', {fontFamily:FONT_TEXT,fontSize:SZ_B,color:INK}).setOrigin(0,0.5));
+    this.visValue = this.add.text(W-36, 172, '', {fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:INK}).setOrigin(1,0.5);
+    p.add(this.visValue);
+    sep(192);
+
+    // Цена — кнопки и значение равномерно по ширине
+    const mkBtn=(x,y,w,h,label,col,tc,fn)=>{
+      const g=this.add.graphics(); g.fillStyle(col,1); g.fillRoundedRect(-w/2,-h/2,w,h,16);
+      g.lineStyle(3,0x000000,0.12); g.strokeRoundedRect(-w/2,-h/2,w,h,16);
+      const t=this.add.text(0,0,label,{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:tc||'#fff'}).setOrigin(0.5);
+      const c=this.add.container(x,y,[g,t]).setDepth(5); c.setSize(w,h);
+      c._fn = fn;
+      c.setLabel=(s)=>t.setText(s);
+      this.shopButtons.push(c); return c;
+    };
+    const mkSym=(x,y,label,col,fn)=>{
+      const t=this.add.text(0,0,label,{fontFamily:FONT_TEXT,fontSize:SZ_H,fontStyle:'700',color:col}).setOrigin(0.5);
+      const c=this.add.container(x,y,[t]).setDepth(5); c.setSize(44,44);
+      c._fn = fn;
+      this.shopButtons.push(c); return c;
+    };
+
+    p.add(this.add.text(36, 222, 'Цена за стакан', {fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:INK}).setOrigin(0,0.5));
+    mkSym(W-148,222,'–','#3a7ce0',()=>this.changePrice(-PRICE_STEP));
+    this.priceText = this.add.text(W-86, 222, '', {fontFamily:FONT,fontSize:SZ_H,fontStyle:'700',color:INK}).setOrigin(0.5);
+    p.add(this.priceText);
+    mkSym(W-36,222,'+','#e5483d',()=>this.changePrice(+PRICE_STEP));
+    sep(250);
+
+    p.add(this.add.text(36, 280, 'Количество стаканов', {fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:INK}).setOrigin(0,0.5));
+    p.add(this.add.text(36, 300, '(кофе 1, молоко 1, сахар 2)', {fontFamily:FONT_TEXT,fontSize:SZ_B,color:SUB}).setOrigin(0,0.5));
+    mkSym(W-148,290,'–','#3a7ce0',()=>this.changeStock('cups',-BUY_STEP));
+    this.cupsText = this.add.text(W-86, 290, '', {fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:INK}).setOrigin(0.5);
+    p.add(this.cupsText);
+    mkSym(W-36,290,'+','#e5483d',()=>this.changeStock('cups',+BUY_STEP));
+    sep(322);
+
+    p.add(this.add.text(36, 352, '🧊 Лёд', {fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:INK}).setOrigin(0,0.5));
+    mkSym(W-148,352,'–','#3a7ce0',()=>this.changeStock('ice',-BUY_STEP));
+    this.iceText = this.add.text(W-86, 352, '', {fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:INK}).setOrigin(0.5);
+    p.add(this.iceText);
+    mkSym(W-36,352,'+','#e5483d',()=>this.changeStock('ice',+BUY_STEP));
+    sep(380);
+
+    this.hintText = this.add.text(W/2, 400, '', {fontFamily:FONT_TEXT,fontSize:SZ_B,color:INK,align:'center',lineSpacing:5,wordWrap:{width:W-60}}).setOrigin(0.5,0);
+    p.add(this.hintText);
+
+    this.startBtn = mkBtn(W/2,500,260,58,'Открыть точку ▶',GREEN,'#fff',()=>this.startDay());
+    mkBtn(130,572,200,48,'📖 Теория',0x8d5a3b,'#fff',()=>this.showTheory());
+    mkBtn(350,572,200,48,'🧪 Песочница',0x3a7ca5,'#fff',()=>this.showSandbox());
+  }
+
+
+  buildDayPanel(){
+    const d = this.dayPanel;
+    d.add(roundRect(this, 24, 688, W-48, 96, 18, 0x2b2330, 0.92));
+    d.add(roundRect(this, 40, 700, W-80, 12, 6, 0x554c5e, 1));
+    this.timeBar = this.add.rectangle(40, 706, W-80, 12, 0xffd23f).setOrigin(0, 0.5);
+    d.add(this.timeBar);
+    this.dayStats1 = this.add.text(44, 732, '', {fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'700',color:'#fff4e0'}).setOrigin(0,0.5);
+    this.dayStats2 = this.add.text(44, 754, '', {fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'700',color:'#fff4e0'}).setOrigin(0,0.5);
+    d.add(this.dayStats1); d.add(this.dayStats2);
+    // Кнопка паузы внутри контейнера — создаём вручную без scene.add
+    const pbG = this.add.graphics();
+    pbG.fillStyle(0x554c5e,1); pbG.fillRoundedRect(-70,-22,140,44,16);
+    const pbT = this.add.text(0,0,'2x ускорить',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:'#fff'}).setOrigin(0.5);
+    this.pauseBtn = this.add.container(W/2+90, 737, [pbG, pbT]).setDepth(this.dayPanel.depth+1).setVisible(false);
+    this.pauseBtn.setSize(120,44);
+    this.pauseBtn.setInteractive(new Phaser.Geom.Rectangle(-70,-22,140,44), Phaser.Geom.Rectangle.Contains);
+    // клик по кнопке обрабатывается единым ручным хит-тестом (case 'day') — как и все кнопки игры
+    this.pauseBtn.setLabel = (s)=>pbT.setText(s);
+    d.setVisible(false);
+  }
+
+  setShopButtons(v){ this.shopButtons.forEach(b=>b.setVisible(v)); }
+  clearSummaryButtons(){ this.summaryButtons.forEach(b=>b.destroy()); this.summaryButtons=[]; }
+
+  enterShop(){
+    this.state='shop';
+    const day = this.today();
+    this.todayEvent = pickWeighted(EVENTS);
+    this.dayStartMoney = this.money;
+    this.spentToday = 0;
+    // Бросаем кубик ОДИН РАЗ — посетители зафиксированы на весь день
+    this.todayFootfall = this.rollFootfall();
+    this.autoStock();
+    this.clearSummaryButtons();
+    this.summary.removeAll(true);
+    this.shopPanel.setVisible(true);
+    this.setShopButtons(true);
+    this.dayPanel.setVisible(false);
+    if(this.pauseBtn) this.pauseBtn.setVisible(false);
+    this.queue.forEach(c=>this.killClient(c)); this.queue=[];
+    this.sky.fillColor = day.sky;
+    this.refreshTop();
+    this.eventText.setText('Событие: '+this.todayEvent.label);
+    this.refreshShopTexts();
+  }
+
+  refreshTop(){
+    const day = this.today();
+    this.dayText.setText((this.dayIndex+1)+'/'+DAYS.length);
+    this.weatherLabel.setText(day.icon+' '+day.name);
+    this.weatherText.setText(day.temp);
+    const wc = day.t<=-10 ? '#1e4fd0' : (day.t>30 ? '#ff4d4d' : (day.t<15 ? '#5cb3ff' : '#ffd23f'));
+    this.weatherText.setColor(wc);
+    this.moneyText.setText(this.money+' ₸');
+    this.moneyText.setColor(this.money>=0? '#2ec4b6':'#ff6b5e');
+  }
+
+  flashFieldHint(x, y, msg){
+    const t = this.add.text(x, y, msg, {fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'700',
+      color:'#e24b40', backgroundColor:'#fff4e0', padding:{x:8,y:4}}).setOrigin(1,0.5).setDepth(20).setAlpha(0);
+    this.tweens.add({targets:t, alpha:1, duration:200, onComplete:()=>{
+      this.time.delayedCall(1400,()=>this.tweens.add({targets:t,alpha:0,duration:300,onComplete:()=>t.destroy()}));
+    }});
+  }
+
+  changePrice(d){
+    this.price = clamp(this.price+d, PRICE_MIN, PRICE_MAX);
+    this.refreshShopTexts();
+  }
+
+  changeStock(key, d){
+    const cost = key==='ice' ? COST_ICE : COST_CUP;
+    const fieldY = key==='cups' ? 290 : 352;
+    const valueX = W-148-4; // левее кнопки минус, рядом со значением
+    if(d>0){ let n=d; while(n>0 && this.money>=cost){ this.inv[key]++; this.money-=cost; this.spentToday+=cost; n--; }
+      if(n>0) this.flashFieldHint(valueX, fieldY, '💸 мало денег'); }
+    else { let n=-d; while(n>0 && this.inv[key]>0){ this.inv[key]--; this.money+=cost; this.spentToday-=cost; n--; } }
+    this.refreshTop(); this.refreshShopTexts();
+  }
+  // heat = t / HEAT_TEMP, ограничено от 0 (мороз) до 1 (жара). При t < 0 → heat = 0
+  // Погода текущего дня с учётом перемешанного порядка
+  today(){
+    if(!this.dayOrder) return DAYS[0];
+    const idx = this.dayOrder[this.dayIndex];
+    return (idx !== undefined && DAYS[idx]) ? DAYS[idx] : DAYS[0]; 
+  }
+
+  heat(){ 
+    const d = this.today();
+    if(!d || d.t === undefined) return 0;
+    return d.t < 0 ? 0 : clamp(d.t / HEAT_TEMP, 0, 1); 
+  }
+
+  ingMaxCups(){ return this.inv.cups; }
+
+  // Базовый поток — только событие (погода НЕ влияет на кол-во посетителей)
+  calcBaseFoot(){
+    return BASE_FOOT * this.todayEvent.coef;
+  }
+
+  // Бросаем кубик ОДИН РАЗ при входе в магазин — диапазон BASE_FOOT*0.8 .. BASE_FOOT*1.2
+  rollFootfall(){
+    const base = this.calcBaseFoot();
+    const noise = 0.8 + Math.random() * 0.4;
+    return Math.max(1, Math.round(base * noise));
+  }
+
+  // Лёд НЕ влияет на посетителей — только на конверсию (желание купить) в жару
+  calcFootWithIce(){ return this.todayFootfall; }
+  // Конверсия: цена + погода + лёд (лёд повышает % продаж в жару, не кол-во посетителей)
+  convRate(price, iceReady=0){
+    const h = this.heat();
+    if(isNaN(h) || h === undefined) return 0.5; // защита от NaN
+    const weatherBonus = -0.20 + h * 0.35;
+    const iceBonus = ICE_BONUS * h * (iceReady||0);
+    const result = clamp(1 - PRICE_SLOPE*(price-PRICE_MIN)/(PRICE_MAX-PRICE_MIN) + weatherBonus + iceBonus, MIN_CONV, 1);
+    return isNaN(result) ? 0.5 : result;
+  }
+  autoStock(){
+    const day = this.today();
+    const base = Math.max(1, Math.round(this.calcBaseFoot()));
+    // Лёд: в мороз (t<0) не нужен; иначе — пропорционально heat × base
+    const iceTarget = day.t < 0 ? 0 : Math.round(base * this.heat());
+    const buy=(key,cost,target)=>{ let n=target-this.inv[key];
+      while(n>0 && this.money>=cost){ this.inv[key]++; this.money-=cost; this.spentToday+=cost; n--; } };
+    buy('ice', COST_ICE, iceTarget);
+    // Стаканы подбираем под зафиксированный поток посетителей
+    buy('cups', COST_CUP, this.todayFootfall);
+  }
+  refreshShopTexts(){
+    this.priceText.setText(this.price+' ₸');
+    // Показываем зафиксированный поток — он НЕ меняется от цены/льда/стаканов
+    this.visValue.setText(this.todayFootfall+' чел.');
+    this.cupsText.setText(String(this.inv.cups));
+    this.cupsText.setColor(this.inv.cups<=0 ? '#e24b40' : '#4b3f3a');
+    this.iceText.setText(String(this.inv.ice));
+    this.iceText.setColor('#4b3f3a');
+    const day = this.today();
+    const baseConv = Math.round(clamp(1 - PRICE_SLOPE*(this.price-PRICE_MIN)/(PRICE_MAX-PRICE_MIN), MIN_CONV, 1) * 100);
+    const convPct  = Math.round(this.convRate(this.price) * 100);
+    const margin = this.price - COST_CUP;
+    let tip;
+    if(this.price < COST_CUP)
+      tip = '⚠️ Цена ниже себестоимости! Каждый стакан = убыток '+(COST_CUP-this.price)+' ₸';
+    else if(convPct === 0)
+      tip = '🚫 При такой цене никто не купит — спрос = 0!';
+    else if(day.t < 0) tip = '❄️ Мороз — меньше хотят коктейль (−20% к продажам).';
+    else if(this.heat() >= 0.7) tip = '🔥 Жара — лёд повышает % покупающих до +30%!';
+    else if(this.heat() >= 0.3) tip = '☀️ Тепло — небольшой бонус к конверсии.';
+    else tip = '⛅ Прохладно — конверсия чуть ниже нормы.';
+    const weatherLine = convPct !== baseConv
+      ? ' → с погодой ~'+convPct+'%'
+      : '';
+    this.hintText.setText(
+      'База ~'+baseConv+'%'+weatherLine+' • Маржа: '+margin+' ₸/стакан\n'+tip
+    );
+  }
+
+  startDay(){
+    if(this.ingMaxCups()<=0){ this.flashHint('Наготовь стаканы (и лёд в жару)'); return; }
+    this.state='day';
+    this.playState = 'play';
+    this.time.timeScale = 1; this.tweens.timeScale = 1;
+    if(this.pauseBtn) this.pauseBtn.setLabel('2x ускорить');
+    const day = this.today();
+    this.shopPanel.setVisible(false);
+    this.setShopButtons(false);
+    this.dayPanel.setVisible(true);
+    if(this.pauseBtn) this.pauseBtn.setVisible(true);
+
+    this.footfall = this.calcFootWithIce();
+    this.spawnInterval = clamp(DAY_MS/Math.max(1,this.footfall), 350, 3000);
+
+    const h = this.heat();
+    const ice = this.inv.ice;
+    const iceReady = h > 0 ? clamp(ice / Math.max(1, this.footfall), 0, 1) : 0;
+    this.convNow = this.convRate(this.price, iceReady);
+
+    this.dayStartMaxCups = this.ingMaxCups();
+    this.refreshTop();
+
+    this.sales=0; this.spawned=0; this.lost=0; this.outCount=0;
+    this.spawningDone=false; this.dayStartTime=this.time.now;
+    this.updateDayStats();
+
+    this.spawnTimer = this.time.addEvent({delay:this.spawnInterval, loop:true, callback:()=>this.trySpawn()});
+    this.serveTimer = this.time.addEvent({delay:SERVE_MS, loop:true, callback:()=>this.serveFront()});
+    this.dayEndTimer = this.time.delayedCall(DAY_MS, ()=>{ this.spawningDone=true; });
+    this.trySpawn();
+    // Перезапускаем болтовню продавца каждый день
+    this.time.addEvent({delay:Phaser.Math.Between(2000,5000), loop:false, callback:()=>this.sellerTalk()});
+  }
+
+  cyclePlayState(){
+    if(!this.playState) this.playState = 'play';
+    if(this.playState === 'play'){
+      this.playState = '2x';
+      this.time.timeScale = 2; this.tweens.timeScale = 2;
+      this.pauseBtn.setLabel('⏸ стоп');
+    } else if(this.playState === '2x'){
+      this.playState = 'pause';
+      if(this.spawnTimer) this.spawnTimer.paused = true;
+      if(this.serveTimer) this.serveTimer.paused = true;
+      this.tweens.pauseAll();
+      this.time.timeScale = 1; this.tweens.timeScale = 1;
+      this.pauseBtn.setLabel('▶ играть');
+    } else {
+      this.playState = 'play';
+      if(this.spawnTimer) this.spawnTimer.paused = false;
+      if(this.serveTimer) this.serveTimer.paused = false;
+      this.tweens.resumeAll();
+      this.time.timeScale = 1; this.tweens.timeScale = 1;
+      this.pauseBtn.setLabel('2x ускорить');
+    }
+  }
+  updateDayStats(){
+    const maxRev = this.footfall * this.price;
+    if(this.dayStats1) this.dayStats1.setText('Продано: '+this.sales+' из '+this.footfall+' шт');
+    if(this.dayStats2) this.dayStats2.setText('Выручка: +'+(this.sales*this.price)+' из '+maxRev+' ₸');
+  }
+
+  slotX(i){ return FRONT_X - i*SLOT_GAP_X; }
+
+  makeClient(){
+    const color = BODY_COLORS[Phaser.Math.Between(0,BODY_COLORS.length-1)];
+    const dark = Phaser.Display.Color.IntegerToColor(color).darken(28).color;
+    const c = this.add.container(SPAWN_X, LANE_Y).setDepth(10);
+    const sh = this.add.graphics(); sh.fillStyle(0x000000,0.12); sh.fillEllipse(0,36,40,10); c.add(sh);
+    const mkLeg=(x)=>{ const l=this.add.rectangle(x,16,8,18,dark).setOrigin(0.5,0); l.setStrokeStyle(2,0x3d3535); return l; };
+    const legL=mkLeg(-6), legR=mkLeg(6); c.add([legL,legR]);
+    const bd = this.add.graphics(); bd.fillStyle(color,1); bd.fillRoundedRect(-16,-6,32,28,7);
+    bd.lineStyle(3,0x3d3535,1); bd.strokeRoundedRect(-16,-6,32,28,7); c.add(bd);
+    const hd = this.add.graphics(); hd.fillStyle(0xf5c542,1); hd.fillCircle(0,-22,15);
+    hd.lineStyle(3,0x3d3535,1); hd.strokeCircle(0,-22,15); c.add(hd);
+    const face = this.add.text(0,-22,'',{fontSize:'24px'}).setOrigin(0.5,0.5); c.add(face);
+    const tL=this.tweens.add({targets:legL, angle:{from:-18,to:18}, duration:240, yoyo:true, repeat:-1, ease:'Sine.inOut'});
+    const tR=this.tweens.add({targets:legR, angle:{from:18,to:-18}, duration:240, yoyo:true, repeat:-1, ease:'Sine.inOut'});
+    c.arrived=false; c.face=face; c.legTweens=[tL,tR];
+    return c;
+  }
+  killClient(c){ if(c.legTweens) c.legTweens.forEach(t=>t.remove()); c.destroy(); }
+
+  trySpawn(){
+    if(this.state!=='day' || this.spawningDone) return;
+    if(this.spawned>=this.footfall) return;
+    if(this.queue.length>=MAX_QUEUE) return;
+    const c = this.makeClient();
+    this.spawned++;
+    const idx = this.queue.length;
+    this.queue.push(c);
+    this.tweens.add({targets:c, x:this.slotX(idx), y:LANE_Y, duration:700, ease:'Sine.out',
+      onComplete:()=>{ c.arrived=true; }});
+    this.updateDayStats();
+  }
+
+  serveFront(){
+    if(this.state!=='day') return;
+    if(this.queue.length===0){
+      if(this.spawningDone || this.spawned>=this.footfall) this.endDay();
+      return;
+    }
+    const c = this.queue[0];
+    if(!c.arrived) return;
+    this.queue.shift();
+
+    const buyChance = this.convNow;
+    let result;
+    if(this.ingMaxCups()<=0){ result='out'; this.lost++; this.outCount++;
+      if(this.outCount===1){
+        this.sellerSay('Всё! Стаканов нет. Идите домой! 🫙', 4000);
+      }
+      if(this.outCount>=7 && !this.spawningDone){
+        this.spawningDone=true;
+        this.time.delayedCall(800,()=>this.endDay());
+      }
+    }
+    else if(Math.random()<buyChance){ result='buy'; this.inv.cups--; if(this.inv.ice>0) this.inv.ice--; this.sales++; this.money+=this.price; }
+    else { result='nobuy'; this.lost++; }
+
+    this.refreshTop();
+    this.updateDayStats();
+    c.arrived=false;
+    this.tweens.add({targets:c, x:FRONT_X+10, y:LANE_Y-2, duration:200,
+      onComplete:()=>this.resolveClient(c,result)});
+
+    this.queue.forEach((q,i)=>{ q.arrived=false;
+      this.tweens.add({targets:q, x:this.slotX(i), duration:260, ease:'Sine.out',
+        onComplete:()=>{ q.arrived=true; }}); });
+  }
+
+  resolveClient(c, result){
+    if(!c.active) return;
+    if(result==='buy'){
+      c.face.setText('😊'); c.face.setScale(0);
+      this.tweens.add({targets:c.face, scale:1, duration:220, ease:'Back.out'});
+      this.time.delayedCall(360,()=>{
+        if(!c.active) return;
+        playClink();
+        const cup=this.makeCup(); cup.setPosition(22,4); cup.setScale(0); c.add(cup);
+        this.tweens.add({targets:cup, scale:1, duration:220, ease:'Back.out'});
+        const phrase = PHRASES_YES[Phaser.Math.Between(0, PHRASES_YES.length-1)];
+        const f=this.add.text(c.x-10, c.y-56, phrase, {fontFamily:FONT,fontSize:SZ_B,fontStyle:'700',color:'#1a7a70',backgroundColor:'#e8fff5',padding:{x:5,y:3}}).setOrigin(0.5).setDepth(11);
+        this.tweens.add({targets:f, y:f.y-28, alpha:0, duration:900, onComplete:()=>f.destroy()});
+      });
+      this.time.delayedCall(980,()=>this.walkOff(c));
+    } else {
+      playNope();
+      c.face.setText(result==='out'?'😟':'😕'); c.face.setScale(0);
+      this.tweens.add({targets:c.face, scale:1, duration:220, ease:'Back.out'});
+      const phrase = result==='out' ? 'нет в наличии' : PHRASES_NO[Phaser.Math.Between(0, PHRASES_NO.length-1)];
+      const f=this.add.text(c.x-10, c.y-56, phrase, {fontFamily:FONT,fontSize:SZ_B,fontStyle:'700',color:'#e24b40',backgroundColor:'#fff0f0',padding:{x:5,y:3}}).setOrigin(0.5).setDepth(11);
+      this.tweens.add({targets:f, y:f.y-22, alpha:0, duration:900, onComplete:()=>f.destroy()});
+      this.time.delayedCall(520,()=>this.walkOff(c));
+    }
+  }
+
+  walkOff(c){
+    if(!c.active) return;
+    this.tweens.add({targets:c, x:W+70, duration:1100, ease:'Sine.in', onComplete:()=>this.killClient(c)});
+  }
+
+  makeCup(){
+    const cup=this.add.container(0,0);
+    const g=this.add.graphics();
+    g.fillStyle(0xe5483d,1);
+    g.beginPath(); g.moveTo(-6,-2); g.lineTo(6,-2); g.lineTo(4,12); g.lineTo(-4,12); g.closePath(); g.fillPath();
+    g.lineStyle(1.5,0x3d3535,1); g.strokePath();
+    g.fillStyle(0x5fa544,1); g.fillRoundedRect(-7,-6,14,5,2); g.lineStyle(1.5,0x3d3535,1); g.strokeRoundedRect(-7,-6,14,5,2);
+    g.lineStyle(2,0x5fa544,1); g.lineBetween(2,-6,5,-15);
+    cup.add(g);
+    return cup;
+  }
+
+  update(){
+    if(this.state==='day' && this.playState !== 'pause'){
+      const prog = clamp((this.time.now-this.dayStartTime)/DAY_MS,0,1);
+      if(this.timeBar){
+        this.timeBar.scaleX = Math.max(0.01, 1-prog);
+        this.timeBar.fillColor = prog<0.7?0xffd23f:0xff6b5e;
+      }
+    }
+  }
+
+  endDay(){
+    if(this.state!=='day') return;
+    this.state='summary';
+    if(this.spawnTimer) this.spawnTimer.remove();
+    if(this.serveTimer) this.serveTimer.remove();
+    if(this.dayEndTimer) this.dayEndTimer.remove();
+    this.dayPanel.setVisible(false);
+    if(this.pauseBtn) this.pauseBtn.setVisible(false);
+    this.queue.forEach(c=>{ if(c.legTweens) c.legTweens.forEach(t=>t.remove());
+      this.tweens.add({targets:c,alpha:0,y:c.y-20,duration:400,onComplete:()=>c.destroy()}); });
+    this.queue=[];
+
+    const revenue = this.sales*this.price;
+    const spent = this.spentToday;
+    const profit = this.money - this.dayStartMoney;   // выручка − закупка за день
+    const iceMelted = this.inv.ice;
+    const day = this.today();
+    this.history.push({ day:this.dayIndex+1, weather:day.name, price:this.price,
+      demand:this.footfall, supply:this.dayStartMaxCups, came:this.spawned, sales:this.sales,
+      lost:this.lost, revenue, spent, profit, iceMelted, money:this.money });
+
+    this.inv.ice = 0;   // лёд растаял за ночь
+    this.showSummary(revenue, spent, profit, iceMelted);
+  }
+
+  showSummary(revenue, spent, profit, iceMelted){
+    this.clearSummaryButtons();
+    this.summary.removeAll(true);
+    this.summary.add(this.add.rectangle(W/2,H/2,W,H,0x1c1722,0.55));
+    const last = this.dayIndex===DAYS.length-1;
+    const convPct = Math.round(this.convNow * 100);
+    const maxRevenue = this.spawned * this.price;
+
+    const rows=[
+      ['Пришло клиентов',  this.spawned+' чел.',               false],
+      ['Продано стаканов', this.sales+' из '+this.spawned+' шт', false],
+      ['Цена',             this.price+' ₸',                    false],
+      ['Конверсия',        convPct+'% купили',                  true],
+      ['Выручка',          '+'+revenue+' ₸',                   false],
+      ['из возможных',     maxRevenue+' ₸',                     true],
+      ['Закупка',          '−'+spent+' ₸',                     false],
+      ['Растаяло льда',    iceMelted+' шт',                     false],
+    ];
+    const ROW_H=30, FIRST=296;
+    const panelH = FIRST - 200 + rows.length*ROW_H + 150;
+    this.summary.add(roundRect(this,32,200,W-64,panelH,24,0xfff4e0,1));
+    this.summary.add(this.add.text(W/2,222, last?'Смена окончена':'Итоги дня '+(this.dayIndex+1),
+      {fontFamily:FONT,fontSize:SZ_H,fontStyle:'700',color:COL.ink}).setOrigin(0.5));
+    rows.forEach((r,i)=>{
+      const y=FIRST+i*ROW_H;
+      const c=r[2]?'#888888':COL.ink;
+      this.summary.add(this.add.text(56,y,r[0],{fontFamily:FONT_TEXT,fontSize:SZ_B,color:c}));
+      this.summary.add(this.add.text(W-56,y,r[1],{fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'600',color:c}).setOrigin(1,0));
+    });
+    const profY=FIRST+rows.length*ROW_H+6;
+    this.summary.add(this.add.text(56,profY,'Прибыль за день',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:COL.ink}));
+    this.summary.add(this.add.text(W-56,profY,(profit>=0?'+':'')+profit+' ₸',
+      {fontFamily:FONT,fontSize:SZ_H,fontStyle:'700',color:profit>=0?'#1a9e8f':'#e24b40'}).setOrigin(1,0));
+    const btnY=profY+48;
+    if(last){
+      try{ window.EconProgress && window.EconProgress.markGame(); }catch(e){}
+      this.summary.add(this.add.text(W/2,btnY,'Касса: '+this.money+' ₸',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:COL.ink}).setOrigin(0.5));
+      this.summaryButtons.push(makeButton(this,130,btnY+42,200,44,'📊 По дням',0x2ec4b6,'#fff',51,()=>this.showReport()));
+      this.summaryButtons.push(makeButton(this,350,btnY+42,200,44,'💡 Анализ цен',0x8d5a3b,'#fff',51,()=>this.showPriceAnalysis()));
+      this.summaryButtons.push(makeButton(this,W/2,btnY+96,220,46,'▶ Заново',0xffd23f,'#2b2330',51,()=>this.scene.restart()));
+    } else {
+      this.summaryButtons.push(makeButton(this,W/2+20,btnY,260,46,'Следующий день ▶',0x2ec4b6,'#fff',51,()=>{
+        this.dayIndex++; this.enterShop();
+      }));
+      this.summaryButtons.push(makeButton(this,130,btnY+56,200,42,'📊 По дням',0xffd23f,'#2b2330',51,()=>this.showReport()));
+      this.summaryButtons.push(makeButton(this,350,btnY+56,200,42,'💡 Цена',0x8d5a3b,'#fff',51,()=>this.showPriceAnalysis()));
+    }
+    if(profit>0) this.fireworks();
+    // Банкротство: если денег меньше чем на закупку среднего дня (30 стаканов + 15 льда)
+    const BANKRUPT_THRESHOLD = (10 * COST_CUP) + (5 * COST_ICE); // 130₸
+    if(!last && this.money < BANKRUPT_THRESHOLD) this.time.delayedCall(800, ()=>this.showBankruptcy());
+    if(last){
+      if(this.money > START_MONEY*1.5) this.time.delayedCall(1200, ()=>this.showVictoryPopup());
+      else this.time.delayedCall(1200, ()=>this.showEndingPopup());
+    }
+  }
+
+  showBankruptcy(){
+    const BANKRUPT_THRESHOLD = (10 * COST_CUP) + (5 * COST_ICE);
+    const totalLost = START_MONEY - this.money;
+    const emoji = '😭';
+    const pop = this.add.container(W/2, H/2).setDepth(90).setAlpha(0);
+    const bg = this.add.graphics();
+    bg.fillStyle(0x000000,0.65); bg.fillRect(-W/2,-H/2,W,H); pop.add(bg);
+    const card = this.add.graphics();
+    card.fillStyle(0x1e1a2e,1); card.fillRoundedRect(-210,-343,420,686,24);
+    card.lineStyle(3,0xff4444,1); card.strokeRoundedRect(-210,-343,420,686,24);
+    card.fillStyle(0xff4444,1); card.fillRoundedRect(-210,-343,420,6,3);
+    pop.add(card);
+
+    // Равномерное распределение: -343 до +343
+    pop.add(this.add.text(0,-280,emoji,{fontSize:'56px'}).setOrigin(0.5,1));
+
+    let title, sub, detail, lesson;
+    if(this.price < COST_CUP){
+      title = 'Щедрость зашкаливает!';
+      sub = 'Продавать по '+this.price+'₸ при себестоимости '+COST_CUP+'₸ — это называется «работать в минус». Клиентам нравится, бизнесу — нет.';
+      detail = 'Правило №1: выручка должна покрывать затраты.\nПравило №2: см. правило №1.';
+      lesson = 'Каждый великий предприниматель\nсначала облажался. Ты в хорошей компании!';
+    } else {
+      title = 'Кассовый разрыв!';
+      sub = 'В кассе '+this.money+'₸, а на следующий день нужно '+BANKRUPT_THRESHOLD+'₸ на закупку. Это классический кассовый разрыв — когда деньги есть, но уже потрачены.';
+      detail = 'В реальном бизнесе так бывает сплошь и рядом. Аренда, зарплаты, закупки — всё требует денег одновременно. Решение: держать резерв и считать оборотный капитал заранее.';
+      lesson = 'Каждый великий предприниматель\nсначала облажался. Ты в хорошей компании!';
+    }
+
+    pop.add(this.add.text(0,-216,title,{fontFamily:FONT,fontSize:SZ_S,fontStyle:'700',color:'#ff6b6b',align:'center',wordWrap:{width:380}}).setOrigin(0.5));
+    pop.add(this.add.text(0,-152,sub,{fontFamily:FONT_TEXT,fontSize:SZ_S,color:'#ffcccc',align:'center',wordWrap:{width:380}}).setOrigin(0.5));
+
+    const sg=this.add.graphics();
+    sg.fillStyle(0xff4444,0.12); sg.fillRoundedRect(-170,-52,340,64,8); pop.add(sg);
+    pop.add(this.add.text(-150,-38,'💸 Потеряно:',{fontFamily:FONT_TEXT,fontSize:SZ_S,color:'#ff9999'}).setOrigin(0,0.5));
+    pop.add(this.add.text(150,-38,totalLost+' ₸',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:'#ff4444'}).setOrigin(1,0.5));
+    pop.add(this.add.text(-150,-4,'🏦 Осталось:',{fontFamily:FONT_TEXT,fontSize:SZ_S,color:'#ff9999'}).setOrigin(0,0.5));
+    pop.add(this.add.text(150,-4,Math.max(0,this.money)+' ₸',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:'#ffccaa'}).setOrigin(1,0.5));
+
+    pop.add(this.add.text(0,76,detail,{fontFamily:FONT_TEXT,fontSize:SZ_B,color:'#aaa8cc',align:'center',lineSpacing:4,wordWrap:{width:380}}).setOrigin(0.5));
+    pop.add(this.add.text(0,178,lesson,{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:'#ffd23f',align:'center',wordWrap:{width:380}}).setOrigin(0.5));
+
+    const btnG=this.add.graphics();
+    btnG.fillStyle(0xff4444,1); btnG.fillRoundedRect(-140,-26,280,52,14);
+    const btnT=this.add.text(0,0,'▶ Попробовать снова!',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:'#fff'}).setOrigin(0.5);
+    const btnC=this.add.container(W/2,H/2+270,[btnG,btnT]).setDepth(91).setSize(280,52);
+    btnC._fn=()=>this.scene.restart();
+    this.summaryButtons.push(btnC);
+    this.tweens.add({targets:pop,alpha:1,scale:{from:0.75,to:1},duration:450,ease:'Back.out'});
+  }
+
+  showEndingPopup(){
+    const profit = this.money - START_MONEY;
+    let emoji, title, sub, lesson;
+    if(profit < -300){
+      emoji='😬'; title='Классический стартап!';
+      sub='Потеряно '+(Math.abs(profit))+'₸ за 5 дней.\nИнвесторы такое называют "ценный опыт".';
+      lesson='Себестоимость 12₸. Цена должна быть выше.\nИ желательно не в 10 раз выше тоже. 😄';
+    } else if(profit < 0){
+      emoji='😐'; title='Почти вышло...';
+      sub='Минус '+(Math.abs(profit))+'₸ за 5 дней.\nДо безубыточности не хватило совсем чуть-чуть.';
+      lesson='Попробуй поднять цену на 5-10₸ —\nэтого может хватить чтобы выйти в плюс!';
+    } else {
+      emoji='🙂'; title='Безубыточность достигнута!';
+      sub='Плюс '+profit+'₸ за 5 дней — скромно, но честно.\nТочка выжила. Кот доволен. 🐱';
+      lesson='Для роста попробуй цену чуть выше\nи следи за конверсией в жаркие дни!';
+    }
+    const pop = this.add.container(W/2, H/2).setDepth(90).setAlpha(0);
+    const bg = this.add.graphics(); bg.fillStyle(0x000000,0.55); bg.fillRect(-W/2,-H/2,W,H); pop.add(bg);
+    const card = this.add.graphics();
+    card.fillStyle(0x1e2a1e,1); card.fillRoundedRect(-210,-255,420,510,24);
+    card.lineStyle(3,0x5fa544,1); card.strokeRoundedRect(-210,-255,420,510,24);
+    pop.add(card);
+    pop.add(this.add.text(0,-210,emoji,{fontSize:'56px'}).setOrigin(0.5));
+    pop.add(this.add.text(0,-150,title,{fontFamily:FONT,fontSize:SZ_H,fontStyle:'700',color:'#aeed8a',align:'center',wordWrap:{width:380}}).setOrigin(0.5));
+    pop.add(this.add.text(0,-96,sub,{fontFamily:FONT_TEXT,fontSize:SZ_B,color:'#cceecc',align:'center',wordWrap:{width:380}}).setOrigin(0.5));
+    const sg=this.add.graphics(); sg.fillStyle(0x5fa544,0.15); sg.fillRoundedRect(-180,-20,360,64,8); pop.add(sg);
+    pop.add(this.add.text(-160,-6,'💰 Касса:',{fontFamily:FONT_TEXT,fontSize:SZ_S,color:'#aeed8a'}).setOrigin(0,0.5));
+    pop.add(this.add.text(160,-6,this.money+' ₸',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:'#aeed8a'}).setOrigin(1,0.5));
+    pop.add(this.add.text(-160,26,(profit>=0?'📈 Прибыль:':'📉 Убыток:'),{fontFamily:FONT_TEXT,fontSize:SZ_S,color:'#aeed8a'}).setOrigin(0,0.5));
+    pop.add(this.add.text(160,26,(profit>=0?'+':'')+profit+' ₸',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:profit>=0?'#aeed8a':'#ff8888'}).setOrigin(1,0.5));
+    pop.add(this.add.text(0,108,lesson,{fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'700',color:'#ffd23f',align:'center',wordWrap:{width:380}}).setOrigin(0.5));
+    const btnG=this.add.graphics(); btnG.fillStyle(0x5fa544,1); btnG.fillRoundedRect(-140,-26,280,52,14);
+    const btnT=this.add.text(0,0,'▶ Попробовать снова!',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:'#fff'}).setOrigin(0.5);
+    const btnC=this.add.container(W/2,H/2+178,[btnG,btnT]).setDepth(91).setSize(280,52);
+    btnC._fn=()=>this.scene.restart();
+    this.summaryButtons.push(btnC);
+    this.tweens.add({targets:pop,alpha:1,scale:{from:0.75,to:1},duration:400,ease:'Back.out'});
+  }
+
+  showVictoryPopup(){
+    const totalProfit = this.money - START_MONEY;
+    const pct = Math.round(totalProfit/START_MONEY*100);
+    const medals = totalProfit>2000?'🏆':totalProfit>1000?'🥇':totalProfit>500?'🥈':'🥉';
+    const titles = totalProfit>2000
+      ? ['Поздравляем! Вы легенда рынка! 🏆','Вы не просто заработали — Вы поняли рынок изнутри. Спрос, предложение, равновесие цены — теперь это не теория, а Ваш инструмент!']
+      : totalProfit>1000
+      ? ['Поздравляем! Настоящий предприниматель! 🥇','Вы освоили главный закон экономики: цена управляет спросом. Этот навык — основа любого бизнеса и финансового мышления!']
+      : totalProfit>500
+      ? ['Отличное экономическое мышление! 🥈','Вы на практике прочувствовали, как погода, цена и конверсия влияют на прибыль. Это и есть прикладная экономика!']
+      : ['Первый шаг сделан! 🥉','Вы получили живой опыт спроса и предложения — то, что в учебниках кажется скучным, на практике становится азартом. Продолжайте!'];
+
+    const pop = this.add.container(W/2, H/2).setDepth(90).setAlpha(0);
+    const bg = this.add.graphics();
+    bg.fillStyle(0x000000,0.5); bg.fillRect(-W/2,-H/2,W,H); pop.add(bg);
+    const card = this.add.graphics();
+    card.fillStyle(0x1c1722,1); card.fillRoundedRect(-210,-270,420,540,24);
+    card.lineStyle(3,0xffd23f,1); card.strokeRoundedRect(-210,-270,420,540,24);
+    pop.add(card);
+
+    pop.add(this.add.text(0,-222,medals,{fontSize:'64px'}).setOrigin(0.5,1));
+    pop.add(this.add.text(0,-154,titles[0],{fontFamily:FONT,fontSize:SZ_S,fontStyle:'700',color:'#ffd23f',align:'center',wordWrap:{width:380}}).setOrigin(0.5));
+    pop.add(this.add.text(0,-76,titles[1],{fontFamily:FONT_TEXT,fontSize:SZ_B,color:'#fff4e0',align:'center',lineSpacing:4,wordWrap:{width:360}}).setOrigin(0.5));
+    pop.add(this.add.text(0,24,'Касса: '+this.money+' ₸',{fontFamily:FONT,fontSize:SZ_S,color:'#2ec4b6',fontStyle:'700'}).setOrigin(0.5));
+    pop.add(this.add.text(0,62,'прибыль за 5 дней: +'+(Math.abs(totalProfit))+' ₸ ('+pct+'%)',
+      {fontFamily:FONT_TEXT,fontSize:SZ_B,color:'#5fa544'}).setOrigin(0.5));
+
+    const btnG = this.add.graphics();
+    btnG.fillStyle(0xffd23f,1); btnG.fillRoundedRect(-130,-28,260,56,16);
+    const btnT = this.add.text(0,0,'🎉 Сыграть ещё!',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:'#2b2330'}).setOrigin(0.5);
+    const btnC = this.add.container(W/2,H/2+158,[btnG,btnT]).setDepth(91).setSize(260,56);
+    btnC._fn=()=>{
+      this.tweens.add({targets:pop,alpha:0,scale:0.9,duration:250,onComplete:()=>pop.destroy()});
+      this.scene.restart();
+    };
+    this.summaryButtons.push(btnC);
+
+    bg.setInteractive(new Phaser.Geom.Rectangle(-W/2,-H/2,W,H),Phaser.Geom.Rectangle.Contains);
+    bg.on('pointerdown',()=>{ this.tweens.add({targets:pop,alpha:0,scale:0.9,duration:250,onComplete:()=>pop.destroy()}); });
+
+    // Салют 🎆
+    this.time.delayedCall(300, ()=>this.victoryFireworks(pop));
+    this.tweens.add({targets:pop, alpha:1, scale:{from:0.7,to:1}, duration:400, ease:'Back.out'});
+  }
+
+  victoryFireworks(pop){
+    const colors=[0xffd23f,0xff6b5e,0x5fa544,0x4da6ff,0xe05a8a,0xffffff,0xff8c2b];
+    const burst=(bx,by,delay)=>{
+      this.time.delayedCall(delay,()=>{
+        for(let i=0;i<20;i++){
+          const p=this.add.graphics().setDepth(95);
+          const col=colors[Phaser.Math.Between(0,colors.length-1)];
+          p.fillStyle(col,1); p.fillCircle(0,0,Phaser.Math.Between(3,6));
+          p.setPosition(bx,by);
+          const angle=Math.random()*Math.PI*2;
+          const spd=Phaser.Math.Between(60,180);
+          this.tweens.add({targets:p,
+            x:bx+Math.cos(angle)*spd, y:by+Math.sin(angle)*spd,
+            alpha:0, scaleX:0.2, scaleY:0.2,
+            duration:Phaser.Math.Between(600,1000), ease:'Sine.out',
+            onComplete:()=>p.destroy()});
+        }
+        const emoji=['🎆','✨','🌟','💫'][Phaser.Math.Between(0,3)];
+        const e=this.add.text(bx,by,emoji,{fontSize:'28px'}).setOrigin(0.5).setDepth(95);
+        this.tweens.add({targets:e,y:by-60,alpha:0,duration:900,onComplete:()=>e.destroy()});
+      });
+    };
+    burst(80,  H/2-420, 0);
+    burst(W-80,H/2-420, 200);
+    burst(W/2, H/2-500, 400);
+    burst(60,  H/2-320, 700);
+    burst(W-60,H/2-320, 900);
+    burst(W/2, H/2-380, 1100);
+  }
+
+  fireworks(){
+    const colors=[0xffd23f,0xff6b5e,0x5fa544,0x4da6ff,0xe05a8a,0xffffff];
+    const burst=(bx,by,delay)=>{
+      this.time.delayedCall(delay,()=>{
+        if(this.state!=='summary') return;
+        const col=colors[Phaser.Math.Between(0,colors.length-1)];
+        for(let i=0;i<16;i++){
+          const ang=(i/16)*Math.PI*2, sp=Phaser.Math.Between(45,95);
+          const p=this.add.circle(bx,by,4,col).setDepth(60);
+          this.tweens.add({targets:p, x:bx+Math.cos(ang)*sp, y:by+Math.sin(ang)*sp+20,
+            alpha:0, scale:0.2, duration:Phaser.Math.Between(750,1050), ease:'Quad.out',
+            onComplete:()=>p.destroy()});
+        }
+      });
+    };
+    for(let k=0;k<6;k++) burst(Phaser.Math.Between(110,370), Phaser.Math.Between(180,360), k*330);
+  }
+
+  flashHint(msg){
+    const t=this.add.text(W/2,672,msg,{fontFamily:FONT,fontSize:SZ_S,fontStyle:'700',color:'#e24b40',align:'center',wordWrap:{width:W-80}}).setOrigin(0.5).setDepth(60);
+    this.tweens.add({targets:t,alpha:0,y:t.y-20,duration:1600,onComplete:()=>t.destroy()});
+  }
+
+  showPriceAnalysis(){
+    this.state='price';
+    this.summary.setVisible(false);
+    this.summaryButtons.forEach(b=>b.setVisible(false));
+    this.priceLayer.removeAll(true);
+    this.priceButtons.forEach(b=>b.destroy()); this.priceButtons=[];
+    this.priceLayer.setVisible(true);
+    this.drawPriceAnalysis();
+    this.priceButtons.push(mkInto(this,this.priceLayer,W/2,800,200,46,'Закрыть',0xff6b5e,'#fff',()=>this.closePriceAnalysis()));
+  }
+
+  closePriceAnalysis(){
+    this.priceLayer.removeAll(true);
+    this.priceButtons.forEach(b=>b.destroy()); this.priceButtons=[];
+    this.priceLayer.setVisible(false);
+    this.state='summary';
+    this.summary.setVisible(true);
+    this.summaryButtons.forEach(b=>b.setVisible(true));
+  }
+
+  drawPriceAnalysis(){
+    const L = this.priceLayer;
+    const h = this.history;
+    if(!h || h.length===0) return;
+
+    L.add(this.add.rectangle(W/2,H/2,W,H,0x1c1722,0.72));
+    L.add(roundRect(this,18,48,W-36,760,22,0xfff4e0,1));
+    L.add(this.add.text(W/2,68,'💡 Анализ цены',{fontFamily:FONT,fontSize:SZ_S,fontStyle:'700',color:COL.ink}).setOrigin(0.5));
+    L.add(this.add.text(W/2,94,'Ваша цена vs оптимум по погоде',{fontFamily:FONT_TEXT,fontSize:'14px',color:COL.sub}).setOrigin(0.5));
+
+    // --- График ---
+    const px0=60, px1=428, pyTop=124, pyBot=204;
+    const X=p=> px0 + (p-PRICE_MIN)/(PRICE_MAX-PRICE_MIN)*(px1-px0);
+    const profitMax = 500;
+    const Y=v=> pyBot - clamp(v,0,profitMax)/profitMax*(pyBot-pyTop);
+
+    const ax=this.add.graphics(); L.add(ax);
+    ax.lineStyle(1,0xe0d4b8,1);
+    [0,100,200,300,400,500].forEach(v=>ax.lineBetween(px0,Y(v),px1,Y(v)));
+    [30,50,70,90].forEach(p=>ax.lineBetween(X(p),pyTop,X(p),pyBot));
+    ax.lineStyle(2,0x2b2330,1);
+    ax.lineBetween(px0,pyTop,px0,pyBot);
+    ax.lineBetween(px0,pyBot,px1,pyBot);
+    [30,50,70,90].forEach(p=>L.add(this.add.text(X(p),pyBot+5,p+'₸',{fontFamily:FONT_TEXT,fontSize:'14px',color:COL.sub}).setOrigin(0.5,0)));
+    [0,250,500].forEach(v=>L.add(this.add.text(px0-5,Y(v),v+'₸',{fontFamily:FONT_TEXT,fontSize:'14px',color:COL.sub}).setOrigin(1,0.5)));
+    L.add(this.add.text(px0-18,(pyTop+pyBot)/2,'прибыль',{fontFamily:FONT_TEXT,fontSize:'14px',color:COL.sub}).setOrigin(0.5).setAngle(-90));
+    L.add(this.add.text((px0+px1)/2,pyBot+16,'цена за стакан',{fontFamily:FONT_TEXT,fontSize:'14px',color:COL.sub}).setOrigin(0.5));
+
+    // Кривая прибыли для каждого дня (по реальной погоде + событию того дня)
+    const dayColors=[0x3a7ce0,0x5fa544,0xe8915a,0xe05a8a,0xff6b5e];
+    const optPrices=[];
+    h.forEach((d,di)=>{
+      const dayData = DAYS[this.dayOrder[di]];
+      const heat = dayData.t<0?0:clamp(dayData.t/HEAT_TEMP,0,1);
+      const wBonus = -0.20 + heat*0.35;
+      // прибыль при цене P = продано × (P − COST_CUP), продано = посетители × конверсия
+      const visitors = d.demand;
+      const profitAt = P => {
+        const conv = clamp(1 - PRICE_SLOPE*(P-PRICE_MIN)/(PRICE_MAX-PRICE_MIN) + wBonus, MIN_CONV, 1);
+        const sold = Math.min(d.supply, Math.round(visitors*conv));
+        return sold * (P - COST_CUP);
+      };
+      // Найти оптимальную цену
+      let bestP=PRICE_MIN, bestPr=-Infinity;
+      for(let P=PRICE_MIN;P<=PRICE_MAX;P+=1){ const pr=profitAt(P); if(pr>bestPr){bestPr=pr;bestP=P;} }
+      optPrices.push({p:bestP, pr:bestPr});
+
+      const col=dayColors[di];
+      const g=this.add.graphics(); L.add(g);
+      g.lineStyle(2.5,col,0.8); g.beginPath();
+      for(let P=PRICE_MIN,f=1;P<=PRICE_MAX;P+=1,f=0){
+        const y=Y(profitAt(P)); f?g.moveTo(X(P),y):g.lineTo(X(P),y);
+      }
+      g.strokePath();
+      // оптимум — точка
+      g.fillStyle(col,1); g.fillCircle(X(bestP),Y(bestPr),5);
+      // фактическая цена — вертикальная метка
+      const myPr=profitAt(d.price);
+      g.fillStyle(0xffffff,1); g.fillCircle(X(d.price),Y(myPr),4);
+      g.lineStyle(2,col,1); g.strokeCircle(X(d.price),Y(myPr),4);
+    });
+
+    // Легенда дней
+    let lx=px0; const lyy=100;
+    h.forEach((d,di)=>{
+      const col=dayColors[di];
+      const sq=this.add.graphics(); sq.fillStyle(col,1); sq.fillRoundedRect(lx,lyy-5,10,10,3); L.add(sq);
+      L.add(this.add.text(lx+13,lyy,'Д'+(di+1),{fontFamily:FONT_TEXT,fontSize:'14px',fontStyle:'700',color:COL.ink}).setOrigin(0,0.5));
+      lx+=34;
+    });
+    const lg2=this.add.graphics();
+    lg2.fillStyle(0x2b2330,1); lg2.fillCircle(px1-44,lyy,4); L.add(lg2);
+    L.add(this.add.text(px1-38,lyy,'оптимум',{fontFamily:FONT_TEXT,fontSize:'14px',color:COL.ink}).setOrigin(0,0.5));
+    const lg3=this.add.graphics();
+    lg3.lineStyle(2,0x888,1); lg3.strokeCircle(px1+18,lyy,3); L.add(lg3);
+    L.add(this.add.text(px1+24,lyy,'Ваша',{fontFamily:FONT_TEXT,fontSize:'14px',color:COL.ink}).setOrigin(0,0.5));
+
+    // --- Таблица по дням ---
+    const tblY = pyBot + 44;
+    L.add(roundRect(this,26,tblY,W-52,h.length*32+80,14,0xfbe9c8,1));
+    L.add(this.add.text(W/2,tblY+14,'По дням: Ваша цена vs оптимум',{fontFamily:FONT_TEXT,fontSize:'14px',fontStyle:'700',color:COL.ink}).setOrigin(0.5));
+    const cols=[30,88,184,298,414];
+    const hdrs=['День','Погода','Моя ₸→прибыль','Опт. ₸→прибыль','Δ'];
+    hdrs.forEach((hd,i)=>L.add(this.add.text(cols[i],tblY+38,hd,{fontFamily:FONT_TEXT,fontSize:'14px',fontStyle:'700',color:COL.sub}).setOrigin(0,0.5)));
+
+    let totalLost=0;
+    h.forEach((d,di)=>{
+      const ry=tblY+58+di*32;
+      const opt=optPrices[di];
+      const dayData=DAYS[this.dayOrder[di]];
+      const heatV=dayData.t<0?0:clamp(dayData.t/HEAT_TEMP,0,1);
+      const wBonus=-0.20+heatV*0.35;
+      const myConv=clamp(1-PRICE_SLOPE*(d.price-PRICE_MIN)/(PRICE_MAX-PRICE_MIN)+wBonus,MIN_CONV,1);
+      const mySold=Math.min(d.supply,Math.round(d.demand*myConv));
+      const myPr=mySold*(d.price-COST_CUP);
+      const lost=Math.round(opt.pr-myPr);
+      totalLost+=Math.max(0,lost);
+
+      const col=dayColors[di];
+      const sq=this.add.graphics(); sq.fillStyle(col,1); sq.fillRoundedRect(cols[0],ry-6,9,12,3); L.add(sq);
+      L.add(this.add.text(cols[0]+12,ry,'Д'+(di+1),{fontFamily:FONT_TEXT,fontSize:'14px',fontStyle:'700',color:COL.ink}).setOrigin(0,0.5));
+      L.add(this.add.text(cols[1],ry,dayData.icon+' '+dayData.name.slice(0,6),{fontFamily:FONT_TEXT,fontSize:'14px',color:COL.ink}).setOrigin(0,0.5));
+      L.add(this.add.text(cols[2],ry,d.price+'₸→+'+myPr+'₸',{fontFamily:FONT_TEXT,fontSize:'14px',color:COL.ink}).setOrigin(0,0.5));
+      L.add(this.add.text(cols[3],ry,opt.p+'₸→+'+Math.round(opt.pr)+'₸',{fontFamily:FONT_TEXT,fontSize:'14px',color:'#1a7a70'}).setOrigin(0,0.5));
+      const lostCol = lost>0?'#e24b40':'#1a7a70';
+      L.add(this.add.text(cols[4],ry,(lost>0?'−'+lost:'✓'),{fontFamily:FONT_TEXT,fontSize:'14px',fontStyle:'700',color:lostCol}).setOrigin(0,0.5));
+    });
+    const totalY=tblY+58+h.length*32;
+    L.add(this.add.text(cols[3],totalY,'Итого:',{fontFamily:FONT_TEXT,fontSize:'14px',fontStyle:'700',color:COL.ink}).setOrigin(0,0.5));
+    L.add(this.add.text(cols[4],totalY,totalLost>0?'−'+totalLost:'✓',{fontFamily:FONT_TEXT,fontSize:'14px',fontStyle:'700',color:totalLost>0?'#e24b40':'#1a7a70'}).setOrigin(0,0.5));
+
+    // --- Вывод текстом ---
+    const txtY = totalY + 26;
+    L.add(roundRect(this,26,txtY,W-52,130,14,0xfff4e0,1));
+    const lines=[];
+    // Анализ по каждому дню отдельно (средняя цена не информативна при разных условиях)
+    h.forEach((d,di)=>{
+      const opt=optPrices[di];
+      const diff=d.price-opt.p;
+      if(Math.abs(diff)<=5)
+        lines.push('Д'+(di+1)+' ('+DAYS[this.dayOrder[di]].name+'): цена '+d.price+'₸ близка к оптимуму '+opt.p+'₸ ✓');
+      else if(diff>5)
+        lines.push('Д'+(di+1)+' ('+DAYS[this.dayOrder[di]].name+'): цена '+d.price+'₸ выше оптимума '+opt.p+'₸ — теряла покупателей.');
+      else
+        lines.push('Д'+(di+1)+' ('+DAYS[this.dayOrder[di]].name+'): цена '+d.price+'₸ ниже оптимума '+opt.p+'₸ — теряла маржу.');
+    });
+    lines.push('Оптимальная цена меняется каждый день: жара → выше, мороз → ниже.');
+    L.add(this.add.text(40,txtY+12,lines.join('\n'),{fontFamily:FONT_TEXT,fontSize:'14px',color:COL.ink,lineSpacing:5,wordWrap:{width:W-90}}));
+  }
+
+  showReport(){
+    this.state='report';
+    this.summary.setVisible(false);
+    this.summaryButtons.forEach(b=>b.setVisible(false));    this.reportLayer.removeAll(true);
+    this.reportButtons.forEach(b=>b.destroy()); this.reportButtons=[];
+    this.reportLayer.setVisible(true);
+    this.drawReport();
+    this.reportButtons.push(mkInto(this,this.reportLayer,W/2,724,200,50,'Закрыть',0xff6b5e,'#fff',()=>this.closeReport()));
+  }
+
+  closeReport(){
+    this.reportLayer.removeAll(true);
+    this.reportButtons.forEach(b=>b.destroy()); this.reportButtons=[];
+    this.reportLayer.setVisible(false);
+    this.state='summary';
+    this.summary.setVisible(true);
+    this.summaryButtons.forEach(b=>b.setVisible(true));
+  }
+
+  drawReport(){
+    const L=this.reportLayer, h=this.history;
+    const curDay = h[h.length-1]; // только последний день
+    const isLast = h.length === DAYS.length;
+    const dayLabel = isLast ? 'Итог 5/5 дней' : 'День '+h.length+'/'+DAYS.length;
+
+    L.add(this.add.rectangle(W/2,H/2,W,H,0x1c1722,0.62));
+    L.add(roundRect(this,24,60,W-48,632,24,0xfff4e0,1));
+    L.add(this.add.text(W/2,84,'Спрос и предложение',{fontFamily:FONT,fontSize:SZ_H,fontStyle:'700',color:COL.ink}).setOrigin(0.5));
+    L.add(this.add.text(W/2,116,dayLabel+' • крест рынка + Ваши продажи',{fontFamily:FONT_TEXT,fontSize:SZ_B,color:COL.sub}).setOrigin(0.5));
+
+    // --- нейтральная конверсия (только цена) ---
+    const convNeutral = P => clamp(1 - PRICE_SLOPE*(P-PRICE_MIN)/(PRICE_MAX-PRICE_MIN), MIN_CONV, 1);
+    const footAvg = BASE_FOOT; // посетители не зависят от погоды
+    const Qd = P => footAvg * convNeutral(P);
+    const cost = COST_CUP;
+    const supply = curDay.supply;
+    const Qs = P => Math.max(0, supply*(P-cost)/(BASE_PRICE-cost));
+    const Qmax = Math.max(10, Math.ceil(Math.max(Qd(PRICE_MIN), supply, 40)/10)*10);
+    let Peq=PRICE_MIN, best=Infinity;
+    for(let P=PRICE_MIN;P<=PRICE_MAX;P+=0.5){ const diff=Math.abs(Qd(P)-Qs(P)); if(diff<best){best=diff;Peq=P;} }
+    const Qeq=(Qd(Peq)+Qs(Peq))/2;
+
+    // --- область графика ---
+    const px0=78, px1=438, pyTop=194, pyBot=424;
+    const X=q=> px0 + clamp(q,0,Qmax)/Qmax*(px1-px0);
+    const Y=p=> pyBot - (p-PRICE_MIN)/(PRICE_MAX-PRICE_MIN)*(pyBot-pyTop);
+
+    // легенда
+    const leg=[['Спрос',0xff8c2b],['Предложение',0x2ec4b6],['Продажи',0xff5470]];
+    let lx=58; const lyy=158;
+    leg.forEach(it=>{ const sq=this.add.graphics(); sq.fillStyle(it[1],1); sq.fillRoundedRect(lx,lyy-7,14,14,3); L.add(sq);
+      L.add(this.add.text(lx+19,lyy,it[0],{fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'600',color:COL.ink}).setOrigin(0,0.5));
+      lx += 30 + it[0].length*8.5; });
+
+    // сетка и оси
+    const ax=this.add.graphics(); L.add(ax);
+    ax.lineStyle(1,0xeaddc0,1);
+    for(let p=PRICE_MIN;p<=PRICE_MAX;p+=10){ const y=Y(p); ax.lineBetween(px0,y,px1,y); }
+    for(let q=0;q<=Qmax;q+=Qmax/4){ const x=X(q); ax.lineBetween(x,pyTop,x,pyBot); }
+    ax.lineStyle(2.5,0x2b2330,1);
+    ax.lineBetween(px0,pyTop,px0,pyBot);
+    ax.lineBetween(px0,pyBot,px1,pyBot);
+    for(let p=PRICE_MIN;p<=PRICE_MAX;p+=20) L.add(this.add.text(px0-8,Y(p),String(p),{fontFamily:FONT_TEXT,fontSize:SZ_B,color:COL.sub}).setOrigin(1,0.5));
+    for(let q=0;q<=Qmax;q+=Qmax/2) L.add(this.add.text(X(q),pyBot+7,String(Math.round(q)),{fontFamily:FONT_TEXT,fontSize:SZ_B,color:COL.sub}).setOrigin(0.5,0));
+    L.add(this.add.text((px0+px1)/2,pyBot+26,'Количество, шт',{fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'600',color:COL.sub}).setOrigin(0.5));
+    const yl=this.add.text(38,(pyTop+pyBot)/2,'Цена, ₸',{fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'600',color:COL.sub}).setOrigin(0.5).setAngle(-90); L.add(yl);
+
+    // кривые
+    const dg=this.add.graphics(); L.add(dg); dg.lineStyle(4,0xff8c2b,1); dg.beginPath();
+    for(let p=PRICE_MIN,f=1;p<=PRICE_MAX;p+=2,f=0){ const x=X(Qd(p)),y=Y(p); f?dg.moveTo(x,y):dg.lineTo(x,y); } dg.strokePath();
+    const sg=this.add.graphics(); L.add(sg); sg.lineStyle(4,0x2ec4b6,1);
+    sg.lineBetween(X(Qs(PRICE_MIN)),Y(PRICE_MIN),X(Qs(PRICE_MAX)),Y(PRICE_MAX));
+
+    // точка равновесия
+    const ex=X(Qeq), ey=Y(Peq), eg=this.add.graphics(); L.add(eg);
+    eg.lineStyle(1.5,0x9a8fa0,1); eg.lineBetween(px0,ey,ex,ey); eg.lineBetween(ex,ey,ex,pyBot);
+    eg.fillStyle(0x2b2330,1); eg.fillCircle(ex,ey,6);
+    L.add(this.add.text(ex+(ex>px0+(px1-px0)*0.55?-10:10), ey-16, 'равновесие ≈'+Math.round(Peq)+'₸',
+      {fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'700',color:COL.ink}).setOrigin(ex>px0+(px1-px0)*0.55?1:0,0.5));
+
+    // ТОЛЬКО ОДНА точка — текущий день
+    const px=X(curDay.sales), py=Y(curDay.price);
+    const pg=this.add.graphics(); L.add(pg);
+    pg.fillStyle(0xffffff,1); pg.fillCircle(px,py,8);
+    pg.fillStyle(0xff5470,1); pg.fillCircle(px,py,6);
+    L.add(this.add.text(px,py-18,'Д'+curDay.day,{fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'700',color:COL.ink}).setOrigin(0.5));
+
+    // если финальный отчёт — показываем все 5 точек
+    if(isLast){
+      const lgp=this.add.graphics(); L.add(lgp); lgp.lineStyle(2,0x2b2330,0.5); lgp.beginPath();
+      h.forEach((d,i)=>{ const x=X(d.sales),y=Y(d.price); i?lgp.lineTo(x,y):lgp.moveTo(x,y); }); lgp.strokePath();
+      h.forEach((d,i)=>{
+        if(i===h.length-1) return; // последнюю уже нарисовали крупнее
+        const x=X(d.sales),y=Y(d.price);
+        lgp.fillStyle(0xffffff,1); lgp.fillCircle(x,y,6); lgp.fillStyle(0xff5470,0.6); lgp.fillCircle(x,y,4);
+        L.add(this.add.text(x,y-14,'Д'+d.day,{fontFamily:FONT_TEXT,fontSize:SZ_B,color:COL.sub}).setOrigin(0.5));
+      });
+    }
+
+    // выводы
+    L.add(roundRect(this,40,446,W-80,232,16,0xfbe9c8,1));
+    const Pavg = isLast ? Math.round(h.reduce((a,d)=>a+d.price,0)/h.length) : curDay.price;
+    const lines=[
+      'Равновесие ≈'+Math.round(Peq)+'₸ — цена, где спрос = предложению.',
+      ''
+    ];
+    if(!isLast){
+      if(curDay.price < COST_CUP) lines.push('Цена '+curDay.price+'₸ ниже себестоимости '+COST_CUP+'₸ — каждая продажа приносила убыток!');
+      else if(curDay.price < Peq-5) lines.push('Цена '+curDay.price+'₸ ниже равновесной. Покупали охотно, но маржа маленькая.');
+      else if(curDay.price > Peq+5) lines.push('Сегодня цена '+curDay.price+'₸ выше равновесной. Маржа хорошая, но часть ушла без покупки.');
+      else lines.push('Сегодня цена '+curDay.price+'₸ близко к равновесию — хороший баланс!');
+    } else {
+      // финальный анализ за 5 дней
+      lines.push('Средняя цена за 5 дней: '+Pavg+'₸. Равновесие ≈'+Math.round(Peq)+'₸.');
+      const cheap=h.filter(d=>d.price<Peq-5), dear=h.filter(d=>d.price>Peq+5 && (d.came-d.sales)>3), ok=h.filter(d=>Math.abs(d.price-Peq)<=5 || (d.came-d.sales)<=3);
+      if(ok.length) lines.push('✓ Дни '+ok.map(d=>'Д'+d.day).join(',')+': цена у равновесия — оптимально.');
+      if(cheap.length) lines.push('↓ Дни '+cheap.map(d=>'Д'+d.day).join(',')+': цена занижена — теряла маржу.');
+      if(dear.length) lines.push('↑ Дни '+dear.map(d=>'Д'+d.day).join(',')+': цена завышена — уходили без покупки.');
+      const avgLost=Math.round(h.reduce((a,d)=>a+(d.came-d.sales),0)/h.length);
+      lines.push('В среднем уходило без покупки: '+avgLost+' чел./день. Подними цену в жаркие дни, снизь в мороз.');
+    }
+    L.add(this.add.text(56,462,lines.join('\n'),{fontFamily:FONT,fontSize:SZ_B,color:COL.ink,lineSpacing:6,wordWrap:{width:W-112}}));
+  }
+
+  resumeShop(){
+    this.state='shop';
+    this.shopPanel.setVisible(true);
+    this.setShopButtons(true);
+  }
+
+  showTheory(){
+    this.state='theory';
+    this.shopPanel.setVisible(false); this.setShopButtons(false);
+    this.theoryLayer.removeAll(true);
+    this.theoryButtons.forEach(b=>b.destroy()); this.theoryButtons=[];
+    this.theoryLayer.setVisible(true);
+    const L=this.theoryLayer;
+    L.add(this.add.rectangle(W/2,H/2,W,H,0x1c1722,0.62));
+    L.add(roundRect(this,24,60,W-48,744,24,0xfff4e0,1));
+    L.add(this.add.text(W/2,86,'Как устроен рынок',{fontFamily:FONT,fontSize:SZ_H,fontStyle:'700',color:COL.ink}).setOrigin(0.5));
+    const t=[
+      '▸ Спрос и предложение',
+      'Спрос — сколько стаканов хотят купить; он выше, когда цена ниже. Предложение — сколько выгодно приготовить; оно выше, когда цена выше. Их пересечение — равновесие рынка.','',
+      '▸ Цена и спрос (эластичность)',
+      'Доля покупателей зависит от цены и погоды. Базово: 1 − (цена − 10) / 90. В мороз −20% к конверсии, в жару +15%. Оптимум цены меняется в зависимости от погоды!','',
+      '▸ Погода и события',
+      'Погода влияет дважды: на поток посетителей и на конверсию. Жара: больше людей и больше покупают. Мороз: меньше людей и меньше покупают. Плюс случайный разброс ±20% каждый день.','',
+      '▸ Лёд в жару',
+      'Лёд повышает конверсию до +30% в жаркий день — больше пришедших берут стакан. В мороз лёд не нужен. Лёд тает каждую ночь.','',
+      '▸ Деньги и запас',
+      'Себестоимость стакана 12 ₸, лёд 2 ₸/шт. Нераспроданные стаканы переходят на следующий день. Прибыль = выручка − закупка.'
+    ].join('\n');
+    L.add(this.add.text(44,112,t,{fontFamily:FONT_TEXT,fontSize:SZ_B,color:COL.ink,lineSpacing:3,wordWrap:{width:W-88}}));
+    this.theoryButtons.push(mkInto(this,this.theoryLayer,W/2,790,200,46,'Закрыть',0xff6b5e,'#fff',()=>this.closeTheory()));
+  }
+
+  closeTheory(){
+    this.theoryLayer.removeAll(true);
+    this.theoryButtons.forEach(b=>b.destroy()); this.theoryButtons=[];
+    this.theoryLayer.setVisible(false);
+    this.resumeShop();
+  }
+
+  showSandbox(){
+    this.state='sandbox';
+    this.shopPanel.setVisible(false); this.setShopButtons(false);
+    this.sandboxButtons.forEach(b=>b.destroy()); this.sandboxButtons=[];
+    this.sandboxLayer.removeAll(true);
+    this.sandboxLayer.setVisible(true);
+
+    // Подтягиваем реальные параметры текущего дня
+    this.sb.cost  = COST_CUP;
+    this.sb.foot  = this.todayFootfall;
+    this.sb.price = this.price;
+    const L=this.sandboxLayer;
+    L.add(this.add.rectangle(W/2,H/2,W,H,0x1c1722,0.62));
+    L.add(roundRect(this,24,52,W-48,790,22,0xfff4e0,1));
+    L.add(this.add.text(W/2,82,'Песочница рынка',{fontFamily:FONT,fontSize:SZ_H,fontStyle:'700',color:COL.ink}).setOrigin(0.5));
+    L.add(this.add.text(W/2,106,'меняй параметры — смотри, как двигается равновесие',{fontFamily:FONT_TEXT,fontSize:SZ_B,color:COL.sub}).setOrigin(0.5));
+
+    this.sbChart=this.add.container(0,0); L.add(this.sbChart);
+
+    L.add(this.add.text(48,318,'Себестоимость',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'600',color:COL.ink}).setOrigin(0,0.5));
+    L.add(this.add.text(48,358,'Посетителей',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'600',color:COL.ink}).setOrigin(0,0.5));
+    L.add(this.add.text(48,398,'Твоя цена',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'600',color:COL.ink}).setOrigin(0,0.5));
+    L.add(this.add.text(300,298,'(сегодня: '+this.todayFootfall+' чел.)',{fontFamily:FONT_TEXT,fontSize:SZ_B,color:COL.sub}).setOrigin(0,1));
+    this.sbCostT=this.add.text(366,318,'',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:COL.ink}).setOrigin(0.5); L.add(this.sbCostT);
+    this.sbFootT=this.add.text(366,358,'',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:COL.ink}).setOrigin(0.5); L.add(this.sbFootT);
+    this.sbPriceT=this.add.text(366,398,'',{fontFamily:FONT_TEXT,fontSize:SZ_S,fontStyle:'700',color:COL.ink}).setOrigin(0.5); L.add(this.sbPriceT);
+
+    L.add(roundRect(this,40,432,W-80,310,14,0xfbe9c8,1));
+    this.sbReadout=this.add.text(56,446,'',{fontFamily:FONT_TEXT,fontSize:SZ_B,color:COL.ink,lineSpacing:6,wordWrap:{width:W-112}}); L.add(this.sbReadout);
+
+    const mk=(x,y,lbl,col,fn)=>{ const t=this.add.text(0,0,lbl,{fontFamily:FONT_TEXT,fontSize:SZ_H,fontStyle:'700',color:col}).setOrigin(0.5); const c=this.add.container(x,y,[t]).setDepth(this.sandboxLayer.depth+1); c.setSize(44,44); c._fn=fn; this.sandboxButtons.push(c); };
+    mk(316,318,'–','#ff6b5e',()=>this.changeSb('cost',-5));
+    mk(416,318,'+','#2ec4b6',()=>this.changeSb('cost',5));
+    mk(316,358,'–','#ff6b5e',()=>this.changeSb('foot',-5));
+    mk(416,358,'+','#2ec4b6',()=>this.changeSb('foot',5));
+    mk(316,398,'–','#ff6b5e',()=>this.changeSb('price',-5));
+    mk(416,398,'+','#2ec4b6',()=>this.changeSb('price',5));
+    this.sandboxButtons.push(mkInto(this,this.sandboxLayer,W/2,812,200,46,'Закрыть',0xffd23f,'#2b2330',()=>this.closeSandbox()));
+    this.drawSandbox();
+  }
+
+  changeSb(key,delta){
+    if(key==='cost') this.sb.cost=clamp(this.sb.cost+delta,10,40);
+    else if(key==='foot') this.sb.foot=clamp(this.sb.foot+delta,10,80);
+    else this.sb.price=clamp(this.sb.price+delta,PRICE_MIN,PRICE_MAX);
+    this.drawSandbox();
+  }
+
+  drawSandbox(){
+    const C=this.sbChart, sb=this.sb, Qmax=80; C.removeAll(true);
+    // В песочнице конверсия нейтральная (без погодного бонуса) — только цена
+    const convNeutral=P=> clamp(1 - PRICE_SLOPE*(P-PRICE_MIN)/(PRICE_MAX-PRICE_MIN), MIN_CONV, 1);
+    const Qd=P=> sb.foot*convNeutral(P);
+    const kS=Qmax/(PRICE_MAX-sb.cost);
+    const Qs=P=> Math.max(0,kS*(P-sb.cost));
+    let Peq=PRICE_MIN,best=Infinity;
+    for(let P=PRICE_MIN;P<=PRICE_MAX;P+=0.5){const d=Math.abs(Qd(P)-Qs(P)); if(d<best){best=d;Peq=P;}}
+    const Qeq=(Qd(Peq)+Qs(Peq))/2;
+
+    const px0=76,px1=440,pyTop=148,pyBot=248;  // высота графика 100px вместо 200
+    const X=q=>px0+clamp(q,0,Qmax)/Qmax*(px1-px0);
+    const Y=p=>pyBot-(p-PRICE_MIN)/(PRICE_MAX-PRICE_MIN)*(pyBot-pyTop);
+
+    const g=this.add.graphics(); C.add(g);
+    g.lineStyle(1,0xeaddc0,1);
+    for(let p=PRICE_MIN;p<=PRICE_MAX;p+=10) g.lineBetween(px0,Y(p),px1,Y(p));
+    g.lineStyle(2.5,0x2b2330,1); g.lineBetween(px0,pyTop,px0,pyBot); g.lineBetween(px0,pyBot,px1,pyBot);
+    for(let p=PRICE_MIN;p<=PRICE_MAX;p+=20) C.add(this.add.text(px0-8,Y(p),String(p),{fontFamily:FONT_TEXT,fontSize:SZ_B,color:COL.sub}).setOrigin(1,0.5));
+    C.add(this.add.text((px0+px1)/2,pyBot+22,'Количество, шт',{fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'600',color:COL.sub}).setOrigin(0.5));
+    const yl=this.add.text(38,(pyTop+pyBot)/2,'Цена, ₸',{fontFamily:FONT_TEXT,fontSize:SZ_B,fontStyle:'600',color:COL.sub}).setOrigin(0.5).setAngle(-90); C.add(yl);
+
+    const dg=this.add.graphics(); C.add(dg); dg.lineStyle(4,0xff8c2b,1); dg.beginPath();
+    for(let p=PRICE_MIN,f=1;p<=PRICE_MAX;p+=2,f=0){const x=X(Qd(p)),y=Y(p); f?dg.moveTo(x,y):dg.lineTo(x,y);} dg.strokePath();
+    const sg=this.add.graphics(); C.add(sg); sg.lineStyle(4,0x2ec4b6,1);
+    sg.lineBetween(X(Qs(PRICE_MIN)),Y(PRICE_MIN),X(Qs(PRICE_MAX)),Y(PRICE_MAX));
+
+    const ex=X(Qeq),ey=Y(Peq),eg=this.add.graphics(); C.add(eg);
+    eg.lineStyle(1.5,0x9a8fa0,1); eg.lineBetween(px0,ey,ex,ey); eg.lineBetween(ex,ey,ex,pyBot);
+    eg.fillStyle(0x2b2330,1); eg.fillCircle(ex,ey,6);
+
+    const qd=Qd(sb.price), qs=Qs(sb.price), sales=Math.min(qd,qs), py=Y(sb.price);
+    const pm=this.add.graphics(); C.add(pm);
+    pm.lineStyle(2,0xff5470,0.9); pm.lineBetween(px0,py,px1,py);
+    pm.fillStyle(0xff8c2b,1); pm.fillCircle(X(qd),py,5);
+    pm.fillStyle(0x2ec4b6,1); pm.fillCircle(X(qs),py,5);
+
+    this.sbCostT.setText(sb.cost+' ₸');
+    this.sbFootT.setText(String(sb.foot));
+    this.sbPriceT.setText(sb.price+' ₸');
+    let note;
+    if(qd>qs+1) note='дефицит: раскупят весь запас, будет очередь.';
+    else if(qs>qd+1) note='избыток: часть стаканов не продастся.';
+    else note='баланс: спрос ≈ предложение.';
+
+    const convAtPrice = Math.round(clamp(1 - PRICE_SLOPE*(sb.price-PRICE_MIN)/(PRICE_MAX-PRICE_MIN), MIN_CONV, 1)*100);
+    const h = this.heat();
+    const ice = this.inv ? this.inv.ice : 0;
+    const iceReady = h > 0 ? clamp(ice / Math.max(1, this.todayFootfall||1), 0, 1) : 0;
+    const weatherBonus = Math.round((-0.20 + h*0.35)*100);
+    const iceBonus = Math.round(ICE_BONUS * h * iceReady * 100);
+    // convNow может быть undefined если день ещё не начался — считаем сами
+    const realConvPct = this.convNow && !isNaN(this.convNow)
+      ? Math.round(this.convNow * 100)
+      : Math.round(clamp(1 - PRICE_SLOPE*(this.price-PRICE_MIN)/(PRICE_MAX-PRICE_MIN) + (-0.20+h*0.35) + ICE_BONUS*h*iceReady, MIN_CONV, 1)*100);
+
+    const todayDone = this.history.length > 0 && this.history[this.history.length-1].day === this.dayIndex+1;
+    let realNote = '';
+    if(todayDone){
+      const realSales = this.history[this.history.length-1].sales;
+      realNote = realSales > Math.round(qd)
+        ? '\n📊 Факт сегодня: продано '+realSales+' шт — больше плана!\nПогода и лёд подняли конверсию до ~'+realConvPct+'% вместо базовых ~'+convAtPrice+'%.'
+        : '\n📊 Факт сегодня: продано '+realSales+' шт (конверсия с погодой ~'+realConvPct+'%).';
+    }
+
+    const weatherNote = weatherBonus >= 0 ? 'погода даёт +'+weatherBonus+'%' : 'погода даёт '+weatherBonus+'%';
+    const iceNote = iceBonus > 0 ? ', лёд +'+iceBonus+'%' : '';
+    const convNote = '⚖️ Базовая конверсия ~'+convAtPrice+'% (только цена).\n'+
+      '🌤️ В подготовке к смене: '+weatherNote+iceNote+' → итого ~'+realConvPct+'%.\n'+
+      'Равновесие ≈'+Math.round(Peq)+'₸. Считается без погоды/льда — это теоретический рынок.';
+
+    this.sbReadout.setText(
+      'Базовый план (без погоды/льда): из '+sb.foot+' посетителей при цене '+sb.price+'₸\n'+
+      'хотят купить ~'+convAtPrice+'% → ≈'+Math.round(qd)+' чел. Равновесие ≈'+Math.round(Peq)+'₸.\n'+
+      '→ продажи по модели ≈'+Math.round(sales)+' шт — '+note+'\n'+
+      convNote + realNote
+    );
+  }
+
+  closeSandbox(){
+    this.sandboxLayer.removeAll(true);
+    this.sandboxButtons.forEach(b=>b.destroy()); this.sandboxButtons=[];
+    this.sandboxLayer.setVisible(false);
+    this.resumeShop();
+  }
+}
+
+const game = new Phaser.Game({
+  type: Phaser.AUTO,
+  backgroundColor: '#1c1722',
+  scale: {
+    mode: Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.CENTER_BOTH,
+    width: W,
+    height: H,
+    parent: 'game',
+  },
+  scene: MainScene,
+});
+
+// Патч input: пересчитываем координаты тапа с учётом реального масштаба canvas
+game.events.once('ready', () => {
+  const mgr = game.input;
+  mgr.transformPointer = function(pointer, pageX, pageY, wasMove) {
+    const canvas = game.canvas;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = W / rect.width;
+    const scaleY = H / rect.height;
+    const x = (pageX - rect.left) * scaleX;
+    const y = (pageY - rect.top) * scaleY;
+    pointer.x = x;
+    pointer.y = y;
+    pointer.worldX = x;
+    pointer.worldY = y;
+  };
+});
+
+// пересчёт размеров/границ холста — чтобы тапы на планшете попадали точно
+function refit(){
+  if(!game || !game.scale) return;
+  setTimeout(()=>{
+    game.scale.refresh();
+    // На десктопе canvas ограничен CSS max-height/max-width — нужно сообщить Phaser реальный размер
+    const canvas = document.querySelector('canvas');
+    if(canvas){
+      const rect = canvas.getBoundingClientRect();
+      if(rect.width > 0) game.scale.refresh();
+    }
+  }, 100);
+}
+window.addEventListener('resize', refit);
+window.addEventListener('orientationchange', ()=>setTimeout(refit, 300));
+window.addEventListener('focus', refit);
+window.addEventListener('load', ()=>setTimeout(refit, 200));
+if(CSS && CSS.supports && CSS.supports('height','100dvh')){
+  document.documentElement.style.height='100dvh';
+  document.body.style.height='100dvh';
+}
+</script>
+<script src="/progress.js"></script>
+</body>
+</html>

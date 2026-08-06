@@ -1,4 +1,10 @@
 User-agent: *
 Allow: /
+Disallow: /teacher$
+Disallow: /student$
+Disallow: /kz/teacher$
+Disallow: /kz/student$
+Disallow: /en/teacher$
+Disallow: /en/student$
 
-Sitemap: https://econolik.com/sitemap.xml
+Sitemap: https://econolik.com/sitemap-index.xml
